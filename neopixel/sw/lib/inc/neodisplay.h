@@ -1,5 +1,5 @@
 // Copyright (c) 2026 ETH Zurich and University of Bologna.
-// Licensed under the Apache License, Version 2.0, see LICENSE for details.
+// Licensed under the Apache License, Version 2.0, see ../../../LICENSES/README.md for details.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -43,8 +43,6 @@ void neodisplay_init_16x16(void);
 void neodisplay_init_32x16(void);
 void neodisplay_init_24x24_tiles(void);
 
-uint32_t neodisplay_pixel_index(uint32_t x, uint32_t y);
-
 void neodisplay_clear(uint32_t color);
 void neodisplay_set_pixel(uint32_t x, uint32_t y, uint32_t color);
 void neodisplay_set_pixel_i32(int32_t x, int32_t y, uint32_t color);
@@ -55,4 +53,3 @@ void neodisplay_draw_circle(int32_t cx, int32_t cy, int32_t radius, uint32_t col
 
 void neodisplay_idle_latch(void);
 void neodisplay_draw(void);
-void neodisplay_wait(uint32_t nops);

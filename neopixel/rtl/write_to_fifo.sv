@@ -29,12 +29,13 @@ module write_to_fifo import neopixel_pkg::*; #(
     /// Signals for DMA driven operation
     input [RegisterDepth-1:0] dma_data_i,
     input dma_valid_push_i,
+    output logic dma_ready_o,
 
     /// Configuration signals
     /// 0: off, 1: OBI is on 2: DMA is on
     input logic [1:0] fifo_access_i,
-    input logic [FifoAddrDepth-1:0] fifo_high_threshold_i,
-    input logic [FifoAddrDepth-1:0] fifo_low_threshold_i,
+    input logic [FifoThresholdWidth-1:0] fifo_high_threshold_i,
+    input logic [FifoThresholdWidth-1:0] fifo_low_threshold_i,
 
     /// Control interface request side using register_interface protocol.
     /// OBI request interface: a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | rready, req
@@ -47,40 +48,67 @@ module write_to_fifo import neopixel_pkg::*; #(
     output logic high_interrupt_o,
     output logic low_interrupt_o
 );
-    logic [FifoAddrDepth-1:0] fifo_usage;
+    // Keep one extra logical bit so a full 16-entry FIFO reports 16 rather than 0.
+    logic [FifoAddrDepth-1:0] fifo_usage_raw;
+    logic [FifoAddrDepth:0] fifo_usage;
+    localparam logic [FifoAddrDepth:0] FifoDepthValue = FifoDepth;
     
     // Obi signals
     logic                       valid_d, valid_q;
     logic                       we_d, we_q;
-    logic                       w_err;
-    logic [31:0]                rdata_d, rdata_q;
+    logic                       err_d, err_q;
+    logic [ObiCfg.DataWidth-1:0] rdata_d, rdata_q;
     logic [ObiCfg.IdWidth-1:0]  id_d, id_q;
 
-    // Step 1: Request phase
-    // grant the request (FIFO is always ready so this can be assigned directly)
-    assign obi_rsp_o.gnt = obi_req_i.a.we ? (
-                           obi_req_i.a.we & !fifo_full_o & obi_req_i.req) : obi_req_i.req;
-    // Safe important info
-    assign valid_d     = obi_req_i.req & obi_rsp_o.gnt;
+    // Access mode is registered locally so ownership changes have a complete
+    // cycle in which all producer handshakes are disabled.
+    logic [1:0]     fifo_access_q, fifo_access_d;
+    logic           owner_change_pending;
+    logic           fifo_write_request;
+    logic           fifo_write_stall;
+    logic           fifo_write_valid;
+    logic           fifo_write_error;
+
+    assign owner_change_pending = fifo_access_i != fifo_access_q;
+    assign fifo_write_request   = obi_req_i.req && obi_req_i.a.we;
+    assign fifo_write_stall     = fifo_write_request &&
+                                  (owner_change_pending ||
+                                   ((fifo_access_q == 2'b01) &&
+                                    (obi_req_i.a.be[2:0] == 3'b111) &&
+                                    fifo_full_o));
+    assign fifo_write_valid     = fifo_write_request &&
+                                  !owner_change_pending &&
+                                  (fifo_access_q == 2'b01) &&
+                                  (obi_req_i.a.be[2:0] == 3'b111) &&
+                                  !fifo_full_o;
+    assign fifo_write_error     = fifo_write_request && !fifo_write_stall &&
+                                  !fifo_write_valid;
+
+    // Wrong-owner, invalid-mode, and partial-byte writes are acknowledged with
+    // an error. Writes stall only during an ownership update or when a valid
+    // OBI-owner write targets a genuinely full FIFO.
+    always_comb begin
+        obi_rsp_o             = '0;
+        obi_rsp_o.gnt         = obi_req_i.req && !fifo_write_stall;
+        obi_rsp_o.r.rid       = id_q;
+        obi_rsp_o.r.err       = err_q;
+        obi_rsp_o.r.rvalid    = valid_q;
+        obi_rsp_o.r.rdata     = rdata_q;
+        obi_rsp_o.r.r_optional = '0;
+    end
+
+    assign valid_d     = obi_req_i.req && obi_rsp_o.gnt;
     assign id_d        = obi_req_i.a.aid;
     assign rdata_d     = obi_req_i.a.we ? '0 : fifo_usage;
     assign we_d        = obi_req_i.a.we;
+    assign err_d       = fifo_write_error && obi_rsp_o.gnt;
 
     // Register outputs for valid, ID, and read data
     `FF(valid_q, valid_d, '0, clk_i, rst_ni)
     `FF(id_q, id_d, '0, clk_i, rst_ni)
     `FF(rdata_q, rdata_d, '0, clk_i, rst_ni)
     `FF(we_q, we_d, '0, clk_i, rst_ni)
-
-    // Step 2: Response phase
-    // On the next cycle, send the response back with the same ID and the data
-    always_comb begin
-        obi_rsp_o.r.rid         = id_q;
-        obi_rsp_o.r.err         = w_err;
-        obi_rsp_o.rvalid        = valid_q;
-        obi_rsp_o.r.rdata       = rdata_q;
-        obi_rsp_o.r.r_optional  = '0;
-    end
+    `FF(err_q, err_d, '0, clk_i, rst_ni)
 
     //////////////////////////////////////////////
     // FIFO (Buffer for all NeoPixel Sequences) //
@@ -90,20 +118,23 @@ module write_to_fifo import neopixel_pkg::*; #(
     logic           obi_push, dma_push;
     logic [23:0]    data;
     logic           push;
-    logic [1:0]     fifo_access_q, fifo_access_d;
-    logic           flush;
 
     assign fifo_access_d = fifo_access_i;
+    assign fifo_usage = fifo_full_o ? FifoDepthValue : {1'b0, fifo_usage_raw};
+
+    // DMA may handshake only while it is the selected producer, ownership is
+    // stable, and the FIFO is not full.
+    assign dma_ready_o = (fifo_access_q == 2'b10) &&
+                         !owner_change_pending &&
+                         !fifo_full_o;
 
     // Determine push conditions for OBI and DMA
-    assign obi_push = obi_req_i.a.we & ~fifo_full_o & obi_req_i.req;
-    assign dma_push = ~fifo_full_o & dma_valid_push_i;
+    assign obi_push = fifo_write_valid;
+    assign dma_push = dma_valid_push_i & dma_ready_o;
 
     always_comb begin
         push = 1'b0;
         data = '0;
-        w_err = 1'b0;
-        w_err = valid_q & we_q ? 1'b1 : 1'b0;
 
         case (fifo_access_q)
             2'b00:begin
@@ -112,7 +143,6 @@ module write_to_fifo import neopixel_pkg::*; #(
             2'b01: begin
                 push = obi_push;
                 data = obi_req_i.a.wdata[23:0];
-                w_err = 1'b0;
             end
             2'b10: begin
                 push = dma_push;
@@ -126,9 +156,6 @@ module write_to_fifo import neopixel_pkg::*; #(
 
     `FF(fifo_access_q, fifo_access_d, '0, clk_i, rst_ni)
 
-    // Flush FIFO when access mode changes
-    assign flush = ~(fifo_access_q == fifo_access_d);
-
     // Instantiate FIFO module for NeoPixel data storage
     fifo_v3 #(
         .DATA_WIDTH ( 24        ),
@@ -138,7 +165,8 @@ module write_to_fifo import neopixel_pkg::*; #(
         .rst_ni     ( rst_ni        ),
         .testmode_i ( 1'b0          ),
 
-        .flush_i    ( flush         ),
+        // Ownership changes are guarded by neopixel_reg and never flush data.
+        .flush_i    ( 1'b0         ),
 
         .data_i     ( data          ),
         .push_i     ( push          ),
@@ -147,7 +175,7 @@ module write_to_fifo import neopixel_pkg::*; #(
 
         .full_o     ( fifo_full_o   ),
         .empty_o    ( fifo_empty_o  ),
-        .usage_o    ( fifo_usage    ),
+        .usage_o    ( fifo_usage_raw ),
 
         .data_o     ( fifo_data_o   )
     );
@@ -164,7 +192,7 @@ module write_to_fifo import neopixel_pkg::*; #(
         fifo_low_interrupt  = (fifo_usage <= fifo_low_threshold_i);
     end
 
-    assign high_interrupt_o = (fifo_access_q == 1'b1) ? fifo_high_interrupt : 1'b0;
-    assign low_interrupt_o = (fifo_access_q == 1'b1) ? fifo_low_interrupt : 1'b0;
+    assign high_interrupt_o = (fifo_access_q == 2'b01) ? fifo_high_interrupt : 1'b0;
+    assign low_interrupt_o = (fifo_access_q == 2'b01) ? fifo_low_interrupt : 1'b0;
 
 endmodule

@@ -4,7 +4,10 @@
  *
  * License: Public Domain
  *
- * Based on:
+ * This local copy follows:
+ * https://github.com/dhepper/font8x8/blob/master/font8x8_basic.h
+ *
+ * The upstream header is based on:
  * // Summary: font8x8.h
  * // 8x8 monochrome bitmap fonts for rendering
  * //
@@ -15,7 +18,8 @@
  * // License:
  * //     Public Domain
  *
- * Fetched from: http://dimensionalrift.homelinux.net/combuster/mos3/?p=viewsource&file=/modules/gfx/font8_8.asm
+ * Historical source noted by the upstream header:
+ * http://dimensionalrift.homelinux.net/combuster/mos3/?p=viewsource&file=/modules/gfx/font8_8.asm
  **/
 
 // Constant: font8x8_basic

@@ -118,26 +118,37 @@ module neopixel import neopixel_pkg::*; #(
 
     // Signals to check if we can load new data into FIFO
     logic dma_req_ready;
-    logic dma_req_valid_d, dma_req_valid_q;
-    logic dma_read_data_once_q, dma_read_data_once_d;
+    logic dma_pending_q, dma_pending_d;
+    logic dma_active_q, dma_active_d;
+    logic [RegisterDepth-1:0] dma_src_addr_q, dma_src_addr_d;
+    logic [RegisterDepth-1:0] dma_num_bytes_q, dma_num_bytes_d;
+    logic dma_start;
+    logic dma_status;
+    logic dma_transfer_done;
 
     // Signal exchange between FIFO and DMA
     logic [RegisterDepth - 1:0]   dma_fifo_data;
     logic dma_fifo_valid;
+    logic dma_fifo_ready;
     logic fifo_full;
 
     // Status
-    logic dma_busy, dma_busy_d, dma_busy_q;
-    `FF(dma_busy_q, dma_busy_d, '0, clk_i, rst_ni)
-    assign dma_busy_d = dma_busy;
 
-    // Signal calculation for DMA
-    assign dma_req_valid_d = dma_constraints.str.valid[0];
-    assign dma_read_data_once_d = (dma_req_valid_d & ~dma_req_valid_q)?
-                0 : dma_read_data_once_q | dma_req_ready;
+    // The active bit closes the acceptance-to-backend-busy gap.  It is set by
+    // the command handshake and cleared by the DMA completion pulse.
+    assign dma_active_d = dma_transfer_done ? 1'b0 :
+                          ((dma_pending_q && dma_req_ready) ? 1'b1 : dma_active_q);
+    assign dma_status = dma_pending_q | dma_active_q;
+    assign dma_pending_d = (dma_start) ? 1'b1 :
+                           (dma_pending_q && dma_req_ready) ? 1'b0 :
+                           dma_pending_q;
+    assign dma_src_addr_d = dma_start ? dma_constraints.str.src_addr : dma_src_addr_q;
+    assign dma_num_bytes_d = dma_start ? dma_constraints.str.num_bytes : dma_num_bytes_q;
 
-    `FF(dma_read_data_once_q, dma_read_data_once_d, '0, clk_i, rst_ni)
-    `FF(dma_req_valid_q, dma_req_valid_d, '0, clk_i, rst_ni)
+    `FF(dma_pending_q,   dma_pending_d,   '0, clk_i, rst_ni)
+    `FF(dma_active_q,    dma_active_d,    '0, clk_i, rst_ni)
+    `FF(dma_src_addr_q,  dma_src_addr_d,  '0, clk_i, rst_ni)
+    `FF(dma_num_bytes_q, dma_num_bytes_d, '0, clk_i, rst_ni)
 
     neopixel_dma #(
         .ObiCfg         ( MgrDmaObiCfg     ),
@@ -148,22 +159,22 @@ module neopixel import neopixel_pkg::*; #(
         .clk_i,
         .rst_ni,
 
-        .src_addr_i         ( dma_constraints.str.src_addr  ),
-        .num_bytes_i        ( dma_constraints.str.num_bytes     ),
+        .src_addr_i         ( dma_src_addr_q  ),
+        .num_bytes_i        ( dma_num_bytes_q ),
 
-        .req_valid_i        ( dma_req_valid_q & ~dma_read_data_once_q ),
+        .req_valid_i        ( dma_pending_q ),
         .req_ready_o        ( dma_req_ready     ),
 
-        .transfer_done_o    (),
+        .transfer_done_o    ( dma_transfer_done ),
 
         .obi_req_o          ( dma_obi_req       ),
         .obi_rsp_i          ( dma_obi_rsp       ),
 
         .fifo_data_o        ( dma_fifo_data     ),
         .fifo_valid_o       ( dma_fifo_valid    ),
-        .fifo_ready_i       ( ~fifo_full        ),
+        .fifo_ready_i       ( dma_fifo_ready    ),
 
-        .busy_o             ( dma_busy          )
+        .busy_o             (                   )
     );
 
     ////////////////////////////
@@ -262,8 +273,11 @@ module neopixel import neopixel_pkg::*; #(
 
     // Signal exchange between register and obi_write_to_fifo module
     logic [1:0] fifo_access;
-    logic [FifoAddrDepth-1:0] fifo_high_threshold, fifo_low_threshold;
-    logic [4:0] irq_mask;
+    logic [FifoThresholdWidth-1:0] fifo_high_threshold, fifo_low_threshold;
+    logic [5:0] irq_mask, irq_status;
+    logic [5:0] irq_events;
+    logic frame_active;
+    logic frame_active_q;
 
     // Register for several things
     neopixel_reg #(
@@ -279,14 +293,19 @@ module neopixel import neopixel_pkg::*; #(
 
         .timing_constraints_o   ( timing_constraints ),
 
-        .dma_req_ready_i ( dma_req_ready ),
+        .dma_status_i    ( dma_status ),
+        .fifo_empty_i    ( fifo_empty ),
+        .frame_active_i  ( frame_active ),
+        .dma_start_o     ( dma_start ),
 
         .dma_constraints_o ( dma_constraints ),
 
         .fifo_access_o (fifo_access),
         .fifo_high_threshold_o (fifo_high_threshold),
         .fifo_low_threshold_o (fifo_low_threshold),
-        .irq_mask_o (irq_mask)
+        .irq_mask_o (irq_mask),
+        .irq_status_o (irq_status),
+        .irq_events_i (irq_events)
     );
 
     // Signal exchange between fifo and neopixel_controller module
@@ -315,6 +334,7 @@ module neopixel import neopixel_pkg::*; #(
 
         .dma_data_i         ( dma_fifo_data  ),
         .dma_valid_push_i   ( dma_fifo_valid ),
+        .dma_ready_o        ( dma_fifo_ready ),
 
         .fifo_access_i (fifo_access),
         .fifo_low_threshold_i(fifo_low_threshold),
@@ -327,11 +347,23 @@ module neopixel import neopixel_pkg::*; #(
         .low_interrupt_o  ( fifo_low_interrupt )
     );
 
-    assign interrupt_o = irq_mask[0] & fifo_low_interrupt |
-                         irq_mask[1] & fifo_high_interrupt |
-                         irq_mask[2] & (dma_busy_q & ~dma_busy) |
-                         irq_mask[3] & (~controller_latch_q & controller_latch) |  // enter LATCH state
-                         irq_mask[4] & (controller_latch_q & ~controller_latch);   // leave LATCH state
+    // Convert level conditions to one-cycle raw events for sticky status capture.
+    logic fifo_low_interrupt_q, fifo_high_interrupt_q;
+    `FF(fifo_low_interrupt_q,  fifo_low_interrupt,  '0, clk_i, rst_ni)
+    `FF(fifo_high_interrupt_q, fifo_high_interrupt, '0, clk_i, rst_ni)
+    `FF(frame_active_q,        frame_active,        '0, clk_i, rst_ni)
+
+    assign irq_events[0] = fifo_low_interrupt  & ~fifo_low_interrupt_q;
+    assign irq_events[1] = fifo_high_interrupt & ~fifo_high_interrupt_q;
+    assign irq_events[2] = dma_transfer_done;
+    assign irq_events[3] = ~controller_latch_q & controller_latch;
+    // Report latch leave only once the complete frame, latch, and configured
+    // sleep interval have finished and the controller is fully idle.
+    assign irq_events[4] = frame_active_q & ~frame_active;
+    assign irq_events[5] = (dma_pending_q | dma_active_q) &&
+                           mgr_obi_rsp_i.rvalid && mgr_obi_rsp_i.r.err;
+
+    assign interrupt_o = |(irq_mask & irq_status);
 
     //----------------------------------------------------------------------------------------------------
     // Neopixel Controller ///
@@ -348,8 +380,9 @@ module neopixel import neopixel_pkg::*; #(
 
         .timing_constraints_i   ( timing_constraints ),
 
-        .data_o ( data_o    ),
-        .latch_state_o ( controller_latch )
+        .data_o          ( data_o         ),
+        .latch_state_o   ( controller_latch ),
+        .frame_active_o  ( frame_active   )
     );
 
 endmodule

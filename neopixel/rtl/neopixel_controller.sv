@@ -28,7 +28,11 @@ module neopixel_controller import neopixel_pkg::*; #() (
     /// Output to NeoPixel data line
     output  logic data_o,
 
-    output logic latch_state_o
+    output logic latch_state_o,
+
+    /// True while a frame is being transmitted, latched, or sleeping.
+    /// This also asserts in the cycle where the first FIFO word is accepted.
+    output logic frame_active_o
 );
 
     /////////////////////////////////////////////////////////////
@@ -37,10 +41,15 @@ module neopixel_controller import neopixel_pkg::*; #() (
 
     // Timing constants and number of NeoPixels to control
     logic [CounterWidth - 1:0] t1h, t1l, t0h, t0l, t_latch, sleep;
-    logic [RegisterDepth - 1:0] num_neopixel;
+    logic [RegisterDepth - 1:0] num_neopixel_raw;
+    logic [PixelCountWidth - 1:0] num_neopixel_cfg;
+    logic [PixelCountWidth - 1:0] num_neopixel_q, num_neopixel_d;
 
     // Extract timing values and number of NeoPixels from input struct
-    assign num_neopixel = timing_constraints_i.str.num_neopixel;
+    assign num_neopixel_raw = timing_constraints_i.str.num_neopixel;
+    assign num_neopixel_cfg = (num_neopixel_raw > MaxNumNeoPixel) ?
+                              PixelCountWidth'(MaxNumNeoPixel) :
+                              PixelCountWidth'(num_neopixel_raw);
     assign t1h          = timing_constraints_i.str.t1h;
     assign t1l          = timing_constraints_i.str.t1l;
     assign t0h          = timing_constraints_i.str.t0h;
@@ -52,7 +61,7 @@ module neopixel_controller import neopixel_pkg::*; #() (
     // Counter value
     logic [CounterWidth - 1:0] counter_q;
     // Control signals for the counter
-    logic counter_en, counter_clear;
+    logic counter_en, counter_clear, counter_overflow;
 
     // Counter instance for implementing timing delays
     delta_counter #(
@@ -68,8 +77,12 @@ module neopixel_controller import neopixel_pkg::*; #() (
         .delta_i    ( 32'd1             ), // Increment by 1 each clock cycle
         .d_i        ( '0                ), // No external load data
         .q_o        ( counter_q         ), // Counter output
-        .overflow_o (                   )
+        .overflow_o ( counter_overflow  )
     );
+
+    function automatic logic timing_elapsed(input logic [CounterWidth - 1:0] cycles);
+        return (cycles == '0) || counter_overflow || (counter_q >= cycles - 1'b1);
+    endfunction
 
     /////////////////////////////////////////
     // FSM for sending Bits to the Neopixel//
@@ -101,7 +114,7 @@ module neopixel_controller import neopixel_pkg::*; #() (
     logic [$clog2(24) - 1:0] active_color_data_index_q, active_color_data_index_d;
 
     // Index of current NeoPixel
-    logic [$clog2(MaxNumNeoPixel):0] neopixel_index_q, neopixel_index_d;
+    logic [PixelIndexWidth - 1:0] neopixel_index_q, neopixel_index_d;
 
     // Next state and output logic
     always_comb begin
@@ -113,6 +126,7 @@ module neopixel_controller import neopixel_pkg::*; #() (
         active_color_data_d = active_color_data_q;
         neopixel_index_d = neopixel_index_q;
         active_color_data_index_d = active_color_data_index_q;
+        num_neopixel_d = num_neopixel_q;
         fifo_pop_o = 0;
         latch_state_o = '0;
 
@@ -123,17 +137,19 @@ module neopixel_controller import neopixel_pkg::*; #() (
                 neopixel_index_d = 0;
                 active_color_data_index_d = 0;
 
-                if (last_state_latch_q & sleep != 0) begin
+                if (last_state_latch_q && sleep != '0) begin
                     counter_en = 1'b1;
-                    last_state_latch_d = (counter_q == sleep)? 1'b0: last_state_latch_q;
+                    last_state_latch_d = timing_elapsed(sleep) ? 1'b0 : last_state_latch_q;
                 end else begin
                     last_state_latch_d = 1'b0;
-                    if (~fifo_empty_i & num_neopixel > 0) begin
+                    if (~fifo_empty_i && num_neopixel_cfg != 0) begin
                         // Start transmission if FIFO has data and NeoPixels are defined
                         state_d = BIT_HIGH;
                         counter_clear = 1'b1;
                         active_color_data_d = fifo_data_i;
                         fifo_pop_o = 1;
+                        // Keep the chain length coherent for the complete frame.
+                        num_neopixel_d = num_neopixel_cfg;
                     end
                 end
             end
@@ -143,7 +159,7 @@ module neopixel_controller import neopixel_pkg::*; #() (
                 data_o = 1;
 
                 // Transition logic based on bit timing
-                if (counter_q == (active_color_data_q[23] ? t1h : t0h) - 1) begin
+                if (timing_elapsed(active_color_data_q[23] ? t1h : t0h)) begin
                     state_d = BIT_LOW;
                     counter_clear = 1'b1;
                 end
@@ -153,7 +169,7 @@ module neopixel_controller import neopixel_pkg::*; #() (
                 counter_en = 1'b1; // Enable the counter
 
                 // Transition logic based on bit timing
-                if (counter_q == (active_color_data_q[23] ? t1l : t0l) - 1) begin
+                if (timing_elapsed(active_color_data_q[23] ? t1l : t0l)) begin
                     active_color_data_d = {active_color_data_q[22:0], 1'b0}; // Shift GRB data
                     counter_clear = 1'b1; // Reset counter for next state
 
@@ -161,13 +177,15 @@ module neopixel_controller import neopixel_pkg::*; #() (
                         // More bits remain, continue with the next bit
                         state_d = BIT_HIGH;
                         active_color_data_index_d = active_color_data_index_q + 1;
-                    end else if ((neopixel_index_q < num_neopixel - 1)) begin
+                    end else if ((num_neopixel_q > 1) &&
+                                 (neopixel_index_q < num_neopixel_q - 1)) begin
                         // We have more NeoPixel left to send data to
                         state_d = BIT_HIGH;
                         active_color_data_index_d = 0;
                         neopixel_index_d = neopixel_index_q + 1;
 
-                        // Load more data if FIFO has data
+                        // Croc integration must continuously service the DMA FIFO;
+                        // zero-fill is defensive waveform behavior if that is violated.
                         active_color_data_d = (fifo_empty_i ? '0 : fifo_data_i);
                         fifo_pop_o = (fifo_empty_i ? 0 : 1);
                     end else begin
@@ -182,7 +200,7 @@ module neopixel_controller import neopixel_pkg::*; #() (
                 latch_state_o = 1'b1;
                 counter_en = 1'b1; // Enable the counter
 
-                if (counter_q == t_latch - 1) begin
+                if (timing_elapsed(t_latch)) begin
                     // if (~fifo_empty_i) begin
                     //     // FIFO has data, send data
                     //     state_d = BIT_HIGH;
@@ -206,11 +224,17 @@ module neopixel_controller import neopixel_pkg::*; #() (
         endcase
     end
 
+    // A frame remains active until the controller has completed the latch and
+    // any configured sleep interval.  Include fifo_pop_o so the first accepted
+    // pixel is covered in the IDLE cycle in which it is consumed.
+    assign frame_active_o = (state_q != IDLE) || last_state_latch_q || fifo_pop_o;
+
     // Flip-flops for state variables
     `FF(state_q, state_d, IDLE, clk_i, rst_ni)
     `FF(active_color_data_q, active_color_data_d, '0, clk_i, rst_ni)
     `FF(active_color_data_index_q, active_color_data_index_d, '0, clk_i, rst_ni)
     `FF(neopixel_index_q, neopixel_index_d, '0, clk_i, rst_ni)
     `FF(last_state_latch_q, last_state_latch_d, '0, clk_i, rst_ni)
+    `FF(num_neopixel_q, num_neopixel_d, '0, clk_i, rst_ni)
 
 endmodule

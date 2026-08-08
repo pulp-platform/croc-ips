@@ -95,8 +95,7 @@ package neopixel_pkg;
     typedef struct packed {
        logic [RegisterDepth - 1:0] src_addr;    // Source Address in SRAM
        logic [RegisterDepth - 1:0] num_bytes;   // Number of bytes sent to FIFO
-       logic [RegisterDepth - 1:0] valid;       // Set to 1, for next data needs 
-                                                // to be set to 0 and then again to 1
+       logic [RegisterDepth - 1:0] valid;       // Write-one DMA launch strobe (not stored)
     } dma_write_reg_fields_t;
 
     typedef union packed {
@@ -135,11 +134,15 @@ package neopixel_pkg;
     parameter logic [AddressWidth - 1:0] DMA_SRC_ADDR_OFFSET      = 11'h120;
     parameter logic [AddressWidth - 1:0] DMA_NUM_BYTES_OFFSET     = 11'h140;
     parameter logic [AddressWidth - 1:0] DMA_VALID_OFFSET         = 11'h160;
+    // Read-only status: bit 0 is set while a DMA command is pending or active.
+    parameter logic [AddressWidth - 1:0] DMA_STATUS_OFFSET        = 11'h1D0;
 
     parameter logic [AddressWidth - 1:0] FIFO_ACCESS_OFFSET       = 11'h180;
 
-    // Bit 0: FIFO low; Bit 1: FIFO high; Bit 2: DMA finished; Bit 3: Enter LATCH, Bit 4: Leave LATCH
+    // Bit 0: FIFO low; Bit 1: FIFO high; Bit 2: DMA finished; Bit 3: Enter LATCH,
+    // Bit 4: Leave LATCH; Bit 5: DMA bus error.
     parameter logic [AddressWidth - 1:0] NEOPIXEL_IRQ_MASK_OFFSET  = 11'h1A0;
+    parameter logic [AddressWidth - 1:0] IRQ_STATUS_OFFSET         = 11'h1B0;
 
     // Threshold for Interrupt
     localparam int unsigned FifoHighThresholdDefault = 14;
@@ -151,7 +154,12 @@ package neopixel_pkg;
     // NeoPixel //
     //////////////
 
-    localparam int unsigned MaxNumNeoPixel = 256;
+    // The NeoPixel protocol has no fixed cascade limit. This IP is practically
+    // limited to 2048 RGB pixels per supplied DMA frame by its DMA memory
+    // budget; this is an IP limit, not a NeoPixel protocol limit.
+    localparam int unsigned MaxNumNeoPixel = 2048;
+    localparam int unsigned PixelCountWidth = $clog2(MaxNumNeoPixel + 1);
+    localparam int unsigned PixelIndexWidth = $clog2(MaxNumNeoPixel);
 
     localparam int unsigned NumBitsPerPixel = 24;
 
@@ -165,6 +173,8 @@ package neopixel_pkg;
     localparam int unsigned FifoDepth = 16;
 
     localparam int unsigned FifoAddrDepth   = (FifoDepth > 1) ? $clog2(FifoDepth) : 1;
+    // Thresholds must represent every legal occupancy, including a full FIFO.
+    localparam int unsigned FifoThresholdWidth = $clog2(FifoDepth + 1);
 
 
     /////////

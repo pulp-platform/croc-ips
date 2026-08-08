@@ -1,5 +1,5 @@
 // Copyright (c) 2026 ETH Zurich and University of Bologna.
-// Licensed under the Apache License, Version 2.0, see LICENSE for details.
+// Licensed under the Apache License, Version 2.0, see ../../../LICENSES/README.md for details.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "neodisplay.h"
@@ -14,13 +14,18 @@
 #define TILE_ROWS    3u
 #define TILE_LINE_LUT_ENTRIES (24u * 3u)
 
-#define STARTUP_LATCH_NOPS       2000000u
-#define POST_FRAME_WAIT_NOPS      200000u
-#define BITS_PER_PIXEL                24u
-#define NOP_WAIT_LOOP_CYCLES_SHIFT     2u
-#define DMA_FRAME_GUARD_NOPS        4000u
-#define COUNTER_WRAP_PIXELS          512u
-#define POST_WRAP_PIXELS              64u
+// C99-compatible compile-time checks for every bundled layout.
+#define NEODISPLAY_STATIC_ASSERT(name, condition) \
+    typedef char name[(condition) ? 1 : -1]
+NEODISPLAY_STATIC_ASSERT(neodisplay_16x16_fits_max,
+                         NEODISPLAY_16X16_PIXELS <= NEODISPLAY_MAX_PIXELS);
+NEODISPLAY_STATIC_ASSERT(neodisplay_32x16_fits_max,
+                         NEODISPLAY_32X16_PIXELS <= NEODISPLAY_MAX_PIXELS);
+NEODISPLAY_STATIC_ASSERT(neodisplay_24x24_fits_max,
+                         NEODISPLAY_24X24_PIXELS <= NEODISPLAY_MAX_PIXELS);
+NEODISPLAY_STATIC_ASSERT(neodisplay_max_fits_ip,
+                         NEODISPLAY_MAX_PIXELS <= NPX_MAX_NUM_PIXELS);
+#undef NEODISPLAY_STATIC_ASSERT
 
 uint32_t neodisplay_framebuffer[NEODISPLAY_MAX_PIXELS]
     __attribute__((section(".dma_data"), aligned(4)));
@@ -38,12 +43,6 @@ static const uint8_t tile_line_lut[TILE_LINE_LUT_ENTRIES] = {
     48, 56, 64, 49, 57, 65, 50, 58, 66, 51, 59, 67,
     52, 60, 68, 53, 61, 69, 54, 62, 70, 55, 63, 71
 };
-
-void neodisplay_wait(uint32_t nops) {
-    while (nops--) {
-        asm volatile("nop");
-    }
-}
 
 static uint32_t display_width(void) {
     switch (current_layout) {
@@ -86,8 +85,21 @@ static uint32_t display_panel_count(void) {
 }
 
 void neodisplay_init(neodisplay_layout_t layout) {
-    current_layout = layout;
-    *reg32(NPX_BASE_ADDR, NPX_NUM_PIXEL_REG_OFFSET) = display_pixels();
+    switch (layout) {
+        case NEODISPLAY_LAYOUT_32X16:
+        case NEODISPLAY_LAYOUT_24X24_TILES:
+        case NEODISPLAY_LAYOUT_16X16:
+            current_layout = layout;
+            break;
+        default:
+            current_layout = NEODISPLAY_LAYOUT_16X16;
+            break;
+    }
+
+    neopixel_init_timing(display_pixels(),
+                         NPX_TIMING_T1H_DEFAULT, NPX_TIMING_T1L_DEFAULT,
+                         NPX_TIMING_T0H_DEFAULT, NPX_TIMING_T0L_DEFAULT,
+                         NPX_TIMING_LATCH_DEFAULT, NPX_TIMING_SLEEP_DEFAULT);
 }
 
 void neodisplay_init_16x16(void) {
@@ -102,7 +114,7 @@ void neodisplay_init_24x24_tiles(void) {
     neodisplay_init(NEODISPLAY_LAYOUT_24X24_TILES);
 }
 
-uint32_t neodisplay_pixel_index(uint32_t x, uint32_t y) {
+static uint32_t neodisplay_pixel_index(uint32_t x, uint32_t y) {
     if (current_layout == NEODISPLAY_LAYOUT_24X24_TILES) {
         uint32_t tile_x = x >> 3;
         uint32_t lut_index = y + (y << 1) + tile_x;
@@ -217,55 +229,22 @@ void neodisplay_draw_circle(int32_t cx, int32_t cy, int32_t radius, uint32_t col
     }
 }
 
-static uint32_t neopixel_cycles_for_color(uint32_t color,
-                                          uint32_t t1_cycles,
-                                          uint32_t t0_cycles) {
-    uint32_t cycles = 0;
-    uint32_t mask = 1u << (BITS_PER_PIXEL - 1);
-
-    while (mask != 0) {
-        cycles += (color & mask) ? t1_cycles : t0_cycles;
-        mask >>= 1;
-    }
-
-    return cycles;
-}
-
-static uint32_t frame_wait_nops(uint32_t pixels) {
-    uint32_t t1_cycles = *reg32(NPX_BASE_ADDR, NPX_TIMING_T1H_REG_OFFSET) +
-                         *reg32(NPX_BASE_ADDR, NPX_TIMING_T1L_REG_OFFSET);
-    uint32_t t0_cycles = *reg32(NPX_BASE_ADDR, NPX_TIMING_T0H_REG_OFFSET) +
-                         *reg32(NPX_BASE_ADDR, NPX_TIMING_T0L_REG_OFFSET);
-    uint32_t cycles = 0;
-
-    for (uint32_t i = 0; i < pixels; i++) {
-        cycles += neopixel_cycles_for_color(neodisplay_framebuffer[i], t1_cycles, t0_cycles);
-    }
-
-    return (cycles >> NOP_WAIT_LOOP_CYCLES_SHIFT) + DMA_FRAME_GUARD_NOPS;
-}
-
 void neodisplay_idle_latch(void) {
-    *reg32(NPX_BASE_ADDR, NPX_DMA_VALID_REG_OFFSET) = 0;
-    *reg32(NPX_BASE_ADDR, NPX_FIFO_REG_OFFSET) = NPX_FIFO_REG_DEACTIVATED;
-    *reg32(NPX_BASE_ADDR, NPX_NUM_PIXEL_REG_OFFSET) = 1;
-    neodisplay_wait(STARTUP_LATCH_NOPS);
+    (void)neopixel_wait_latch_leave();
 }
 
 void neodisplay_draw(void) {
     uint32_t pixels = display_pixels();
 
-    *reg32(NPX_BASE_ADDR, NPX_DMA_VALID_REG_OFFSET) = 0;
-    *reg32(NPX_BASE_ADDR, NPX_NUM_PIXEL_REG_OFFSET) = pixels;
-    neodisplay_wait(1000);
-
-    neopixel_setup_dma(neodisplay_framebuffer, NEODISPLAY_FRAME_BYTES(pixels));
-
-    if (pixels > COUNTER_WRAP_PIXELS) {
-        neodisplay_wait(frame_wait_nops(COUNTER_WRAP_PIXELS));
-        *reg32(NPX_BASE_ADDR, NPX_NUM_PIXEL_REG_OFFSET) = pixels - COUNTER_WRAP_PIXELS;
+    // Sticky events belong to the previous command until explicitly cleared.
+    // DMA_DONE only means that the source transfer completed; LATCH_LEAVE is
+    // the event that marks the end of the displayed frame.
+    neopixel_irq_clear(NPX_IRQ_DMA_DONE | NPX_IRQ_DMA_ERROR | NPX_IRQ_LATCH_LEAVE);
+    if (!neopixel_setup_dma(neodisplay_framebuffer, NEODISPLAY_FRAME_BYTES(pixels))) {
+        return;
     }
-
-    neodisplay_wait(frame_wait_nops(pixels));
-    neodisplay_wait(POST_FRAME_WAIT_NOPS);
+    if (!neopixel_wait_dma()) {
+        return;
+    }
+    (void)neopixel_wait_latch_leave();
 }
