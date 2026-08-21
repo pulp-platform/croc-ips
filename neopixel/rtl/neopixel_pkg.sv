@@ -1,0 +1,230 @@
+// Copyright 2025 ETH Zurich and University of Bologna.
+// Solderpad Hardware License, Version 0.51, see LICENSE for details.
+// SPDX-License-Identifier: SHL-0.51
+//
+// Author: Luisa Wüthrich <lwuethri@ethz.ch>
+
+`include "register_interface/typedef.svh"
+`include "obi/typedef.svh"
+
+package neopixel_pkg;
+
+    //import the package from the domain you are on
+    import user_pkg::*;
+
+    /////////////////
+    // Address map //
+    /////////////////
+
+    // Address map data type
+    typedef struct packed {
+        logic [31:0] idx;
+        logic [31:0] start_addr;
+        logic [31:0] end_addr;
+    } addr_map_rule_t;
+
+    // Register Address
+    localparam bit [31:0] NeoPixelRegisterAddrOffset  = UserNeoPixelAddrOffset;
+    localparam bit [31:0] NeoPixelRegisterAddrRange   = 32'h0000_0200;
+
+    // FIFO Address
+    localparam bit [31:0] NeoPixelFifoAddrOffset   =
+                            NeoPixelRegisterAddrOffset + NeoPixelRegisterAddrRange;
+    localparam bit [31:0] NeoPixelFifoAddrRange    = 32'h0000_0E00;
+
+    // Address rules
+    localparam int unsigned NumNeoPixelAddressRules   = 2;  // Register + FIFO
+    localparam int unsigned NumNeoPixelAddress        = NumNeoPixelAddressRules + 1; // + OBI error
+
+    // Enum for bus indices
+    typedef enum int {
+        NeoPixelError       = 0,
+        NeoPixelRegister    = 1,
+        NeoPixelFifo        = 2
+    } neopixel_demux_outputs_e;
+
+    localparam addr_map_rule_t [NumNeoPixelAddressRules-1:0] neopixel_addr_map = '{
+        // 0: Error
+        // 1: Register
+        '{ idx: NeoPixelRegister,   start_addr: UserNeoPixelAddrOffset,
+                end_addr: NeoPixelRegisterAddrOffset + NeoPixelRegisterAddrRange},
+        // 2: FIFO
+        '{ idx: NeoPixelFifo,       start_addr: NeoPixelFifoAddrOffset,
+                end_addr: NeoPixelFifoAddrOffset + NeoPixelFifoAddrRange}
+    };
+
+    /////////////////////////////////////
+    // Register for Timing Constraints //
+    /////////////////////////////////////
+
+    //-----------------------------------------------------------------------------------------------
+    // Register Unions
+    //-----------------------------------------------------------------------------------------------
+
+    // Address widths within the block : Defines the max no of Block Addresses
+    parameter int AddressWidth = 10;
+
+    // Register space
+    parameter int RegisterDepth = 32;
+
+    //----Writeable NeoPixel Register-------------------------------------------------------------------
+
+    // Number of Register for the NeoPixel
+    parameter int NumNeoPixelReg = 7;
+
+    typedef struct packed {
+        logic [RegisterDepth - 1:0] num_neopixel;   // Number of NeoPixel attached
+        logic [RegisterDepth - 1:0] t1h;            // 1 code, high voltage time
+        logic [RegisterDepth - 1:0] t1l;            // 1 code, low voltage time
+        logic [RegisterDepth - 1:0] t0h;            // 0 code, high voltage time
+        logic [RegisterDepth - 1:0] t0l;            // 0 code, low voltage time
+        logic [RegisterDepth - 1:0] t_latch;        // Low voltage time
+        logic [RegisterDepth - 1:0] sleep;          // Sleep time in idle state
+    } neopixel_write_reg_fields_t;
+
+    typedef union packed {
+        neopixel_write_reg_fields_t str;        // Access as structured fields
+        logic [NumNeoPixelReg * RegisterDepth - 1:0] arr;   // Access as a flat array
+    } neopixel_write_reg_union_t;
+
+    //----Writeable DMA Register-------------------------------------------------------------------
+
+    // Number of Register for the DMA
+    parameter int NumDmaReg = 3;
+
+    typedef struct packed {
+       logic [RegisterDepth - 1:0] src_addr;    // Source Address in SRAM
+       logic [RegisterDepth - 1:0] num_bytes;   // Number of bytes sent to FIFO
+       logic [RegisterDepth - 1:0] valid;       // Write-one DMA launch strobe (not stored)
+    } dma_write_reg_fields_t;
+
+    typedef union packed {
+        dma_write_reg_fields_t str;        // Access as structured fields
+        logic [NumDmaReg * RegisterDepth - 1:0] arr;   // Access as a flat array
+    } dma_write_reg_union_t;
+
+    //----------------------------------------------------------------------------------------------------
+    // Register Address Offsets //
+    //----------------------------------------------------------------------------------------------------
+
+    //----Information Register----------------------------------------------------------------------------
+    // After the chip is printed Software can't change them
+
+    // Number of NeoPixel the controller can support
+    parameter logic [AddressWidth - 1:0] MAX_NUM_NEOPIXEL_OFFSET  = 11'h 0;
+    // Minimum frequency for which the NeoPixel still works
+    parameter logic [AddressWidth - 1:0] MIN_FREQ_OFFSET          = 11'h 20;
+
+    //----Writeable Register-------------------------------------------------------------------------------
+    // After the chip is printed you can write into it with Software
+
+    // Registers used for the neopixel_controller
+    // Number of attached NeoPixels
+    parameter logic [AddressWidth - 1:0] NUM_NEOPIXEL_OFFSET      = 11'h 40;
+    // Timing constraints for the timing control
+    // you have to calculate the values
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_T1H_OFFSET      = 11'h 60;
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_T1L_OFFSET      = 11'h 80;
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_T0H_OFFSET      = 11'h A0;
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_T0L_OFFSET      = 11'h C0;
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_T_LATCH_OFFSET  = 11'h E0;
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_SLEEP_OFFSET    = 11'h100;
+
+    // Registers used for the DMA
+    parameter logic [AddressWidth - 1:0] DMA_SRC_ADDR_OFFSET      = 11'h120;
+    parameter logic [AddressWidth - 1:0] DMA_NUM_BYTES_OFFSET     = 11'h140;
+    parameter logic [AddressWidth - 1:0] DMA_VALID_OFFSET         = 11'h160;
+    // Read-only status: bit 0 is set while a DMA command is pending or active.
+    parameter logic [AddressWidth - 1:0] DMA_STATUS_OFFSET        = 11'h1D0;
+
+    parameter logic [AddressWidth - 1:0] FIFO_ACCESS_OFFSET       = 11'h180;
+
+    // Bit 0: FIFO low; Bit 1: FIFO high; Bit 2: DMA finished; Bit 3: Enter LATCH,
+    // Bit 4: Leave LATCH; Bit 5: DMA bus error.
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_IRQ_MASK_OFFSET  = 11'h1A0;
+    parameter logic [AddressWidth - 1:0] IRQ_STATUS_OFFSET         = 11'h1B0;
+
+    // Threshold for Interrupt
+    localparam int unsigned FifoHighThresholdDefault = 14;
+    localparam int unsigned FifoLowThresholdDefault = 2;
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_FIFO_LOW_OFFSET  = 11'h1C0;
+    parameter logic [AddressWidth - 1:0] NEOPIXEL_FIFO_HIGH_OFFSET = 11'h1E0;
+
+    //////////////
+    // NeoPixel //
+    //////////////
+
+    // The NeoPixel protocol has no fixed cascade limit. This IP is practically
+    // limited to 2048 RGB pixels per supplied DMA frame by its DMA memory
+    // budget; this is an IP limit, not a NeoPixel protocol limit.
+    localparam int unsigned MaxNumNeoPixel = 2048;
+    localparam int unsigned PixelCountWidth = $clog2(MaxNumNeoPixel + 1);
+    localparam int unsigned PixelIndexWidth = $clog2(MaxNumNeoPixel);
+
+    localparam int unsigned NumBitsPerPixel = 24;
+
+    localparam int unsigned CounterWidth = 32;
+
+    /////////////////////////
+    // FIFO for color data //
+    /////////////////////////
+
+    // FIFO parameters
+    localparam int unsigned FifoDepth = 16;
+
+    localparam int unsigned FifoAddrDepth   = (FifoDepth > 1) ? $clog2(FifoDepth) : 1;
+    // Thresholds must represent every legal occupancy, including a full FIFO.
+    localparam int unsigned FifoThresholdWidth = $clog2(FifoDepth + 1);
+
+
+    /////////
+    // DMA //
+    /////////
+
+    // DMA needs a rready signal, for all other OBI signals rready has been disabled
+    // A new OBI signal construct is needed
+
+    localparam obi_pkg::obi_cfg_t MgrDmaObiCfg = '{
+                                  UseRReady:          1'b1,
+                                  CombGnt:            1'b0,
+                                  AddrWidth:            32,
+                                  DataWidth:            32,
+                                  IdWidth:               1,
+                                  Integrity:          1'b0,
+                                  BeFull:             1'b1,
+                                  OptionalCfg:         '0
+                                };
+
+    /// OBI Manager <-> Xbar address channel
+    typedef struct packed {
+        logic [  MgrDmaObiCfg.AddrWidth-1:0] addr;
+        logic                                we;
+        logic [MgrDmaObiCfg.DataWidth/8-1:0] be;
+        logic [  MgrDmaObiCfg.DataWidth-1:0] wdata;
+        logic [    MgrDmaObiCfg.IdWidth-1:0] aid;
+        logic                                a_optional; // dummy signal; not used
+    } mgr_dma_obi_a_chan_t;
+
+    /// OBI Manager <-> Xbar request
+    typedef struct packed {
+        mgr_dma_obi_a_chan_t a;
+        logic    req;
+        logic rready;
+    } mgr_dma_obi_req_t;
+
+    /// OBI Manager <-> Xbar response channel
+    typedef struct packed {
+        logic [MgrDmaObiCfg.DataWidth-1:0] rdata;
+        logic [  MgrDmaObiCfg.IdWidth-1:0] rid;
+        logic                              err;
+        logic                              r_optional; // dummy signal; not used
+    } mgr_dma_obi_r_chan_t;
+
+    /// OBI Manager <-> Xbar response
+    typedef struct packed {
+        mgr_dma_obi_r_chan_t r;
+        logic    gnt;
+        logic    rvalid;
+    } mgr_dma_obi_rsp_t;
+
+endpackage
