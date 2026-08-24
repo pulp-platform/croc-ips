@@ -27,18 +27,18 @@ module neopixel import neopixel_pkg::*; #(
     input logic testmode_i,
 
     /// This is the Subordinate, we want something from the neopixel
-    /// Control interface request side using register_interface protocol.
+    /// Control interface request side using OBI.
     /// OBI request interface : a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | rready, req
     input  sbr_obi_req_t obi_req_i,
-    /// Control interface request side using register_interface protocol.
+    /// Control interface response side using OBI.
     /// OBI response interface : r.rdata, r.rid, r.err, r.r_optional | gnt, rvalid
     output sbr_obi_rsp_t obi_rsp_o,
 
     /// This is a Manager, he wants something from somewhere else
-    /// Control interface request side using register_interface protocol.
+    /// DMA interface request side using OBI.
     /// OBI request interface : a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | rready, req
     output mgr_obi_req_t mgr_obi_req_o,
-    /// Control interface request side using register_interface protocol.
+    /// DMA interface response side using OBI.
     /// OBI response interface : r.rdata, r.rid, r.err, r.r_optional | gnt, rvalid
     input  mgr_obi_rsp_t mgr_obi_rsp_i,
 

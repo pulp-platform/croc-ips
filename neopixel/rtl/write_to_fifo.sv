@@ -37,10 +37,10 @@ module write_to_fifo import neopixel_pkg::*; #(
     input logic [FifoThresholdWidth-1:0] fifo_high_threshold_i,
     input logic [FifoThresholdWidth-1:0] fifo_low_threshold_i,
 
-    /// Control interface request side using register_interface protocol.
+    /// Control interface request side using OBI.
     /// OBI request interface: a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | rready, req
     input  obi_req_t obi_req_i,
-    /// Control interface request side using register_interface protocol.
+    /// Control interface response side using OBI.
     /// OBI response interface: r.rdata, r.rid, r.err, r.r_optional | gnt, rvalid
     output obi_rsp_t obi_rsp_o,
 
@@ -92,7 +92,7 @@ module write_to_fifo import neopixel_pkg::*; #(
         obi_rsp_o.gnt         = obi_req_i.req && !fifo_write_stall;
         obi_rsp_o.r.rid       = id_q;
         obi_rsp_o.r.err       = err_q;
-        obi_rsp_o.r.rvalid    = valid_q;
+        obi_rsp_o.rvalid      = valid_q;
         obi_rsp_o.r.rdata     = rdata_q;
         obi_rsp_o.r.r_optional = '0;
     end

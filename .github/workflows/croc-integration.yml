@@ -1,0 +1,66 @@
+# Copyright 2026 ETH Zurich and University of Bologna.
+# Licensed under the Apache License, Version 2.0, see LICENSE for details.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Croc Integration
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: ${{ matrix.ip }} on Croc main
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        ip:
+          - neopixel
+    steps:
+      - name: Checkout Croc IPs
+        uses: actions/checkout@v4
+        with:
+          path: croc-ips
+
+      - name: Checkout Croc main
+        uses: actions/checkout@v4
+        with:
+          repository: pulp-platform/croc
+          ref: main
+          submodules: recursive
+          path: croc
+
+      - name: Apply IP integration overlay
+        run: croc-ips/ci/${{ matrix.ip }}/apply_croc_overlay.sh "$GITHUB_WORKSPACE/croc"
+
+      - name: Report Croc revision
+        run: git -C croc rev-parse HEAD
+
+      - name: Run RTL integration test in OSEDA
+        working-directory: croc
+        run: |
+          compose() {
+            env UID="$(id -u)" GID="$(id -g)" docker compose "$@"
+          }
+          compose pull
+          compose up -d --pull=never
+          compose exec -T pulp-docker bash -lc '
+            source ~/.bashrc
+            make -C sw
+            cd verilator
+            ./run_verilator.sh --build
+            ./run_verilator.sh --run ../sw/bin/test/${{ matrix.ip }}_integration_test.hex
+            grep -q "\\[JTAG\\] Simulation finished: SUCCESS" croc_rtl.log
+          '
+
+      - name: Stop OSEDA container
+        if: always()
+        working-directory: croc
+        run: env UID="$(id -u)" GID="$(id -g)" docker compose down --volumes --remove-orphans

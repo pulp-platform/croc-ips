@@ -5,45 +5,30 @@
 // Authors:
 // - Philippe Sauter <phsauter@iis.ee.ethz.ch>
 
-`include "register_interface/typedef.svh"
 `include "obi/typedef.svh"
 
 package user_pkg;
 
-  ////////////////////////////////
-  // User Manager Address maps //
-  ///////////////////////////////
-  
-  // None
-
-
-  /////////////////////////////////////
-  // User Subordinate Address maps ////
-  /////////////////////////////////////
-
-  localparam int unsigned NumUserDomainSubordinates = 2; // ROM + NeoPixel
-
-  localparam bit [31:0] UserRomAddrOffset   = croc_pkg::UserBaseAddr; // 32'h2000_0000;
-  localparam bit [31:0] UserRomAddrRange    = 32'h0000_1000;          // every subordinate has at least 4KB
-
-  localparam bit [31:0] UserNeoPixelAddrOffset   = croc_pkg::UserBaseAddr + 32'h0000_1000;
-  localparam bit [31:0] UserNeoPixelAddrRange    = 32'h0000_1000;
-
-  localparam int unsigned NumDemuxSbrRules  = NumUserDomainSubordinates; // number of address rules in the decoder
-  localparam int unsigned NumDemuxSbr       = NumDemuxSbrRules + 1; // additional OBI error, used for signal arrays
-
-  // Enum for bus indices
-  typedef enum int {
+  // The base address of the user domain can be retrieved from `croc_pkg::UserBaseAddr`.
+  // Keep subordinates on 4 KiB boundaries.
+  typedef enum bit [3:0]  {
     UserError    = 0,
-    UserRom      = 1,
-    UserNeoPixel = 2
+    UserNeoPixel = 1
   } user_demux_outputs_e;
 
-  // Address rules given to address decoder
-  // UserError does not appear as it will be used as default rule
-  localparam croc_pkg::addr_map_rule_t [NumDemuxSbrRules-1:0] user_addr_map = '{
-    '{ idx: UserRom,       start_addr: UserRomAddrOffset,       end_addr: UserRomAddrOffset  + UserRomAddrRange  }, // 1: ROM
-    '{ idx: UserNeoPixel,  start_addr: UserNeoPixelAddrOffset,  end_addr: UserNeoPixelAddrOffset + UserNeoPixelAddrRange   }
+  localparam bit [31:0] UserNeoPixelAddrOffset = croc_pkg::UserBaseAddr + 32'h0000_1000;
+  localparam bit [31:0] UserNeoPixelAddrRange  = 32'h0000_1000;
+
+  /// Address rules given to the user-domain demultiplexer.
+  localparam croc_pkg::addr_map_rule_t [0:0] UserAddrMap = '{
+    '{
+      idx:        UserNeoPixel,
+      start_addr: UserNeoPixelAddrOffset,
+      end_addr:   UserNeoPixelAddrOffset + UserNeoPixelAddrRange
+    }
   };
+
+  // One additional subordinate receives accesses outside UserAddrMap.
+  localparam int unsigned NumDemuxSbr = $size(UserAddrMap) + 1;
 
 endpackage
