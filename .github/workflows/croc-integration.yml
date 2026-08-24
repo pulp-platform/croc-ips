@@ -46,11 +46,12 @@ jobs:
       - name: Run RTL integration test in OSEDA
         working-directory: croc
         run: |
-          export UID="$(id -u)"
-          export GID="$(id -g)"
-          docker compose pull
-          docker compose up -d --pull=never
-          docker compose exec -T pulp-docker bash -lc '
+          compose() {
+            env UID="$(id -u)" GID="$(id -g)" docker compose "$@"
+          }
+          compose pull
+          compose up -d --pull=never
+          compose exec -T pulp-docker bash -lc '
             source ~/.bashrc
             make -C sw
             cd verilator
@@ -62,4 +63,4 @@ jobs:
       - name: Stop OSEDA container
         if: always()
         working-directory: croc
-        run: docker compose down --volumes --remove-orphans
+        run: env UID="$(id -u)" GID="$(id -g)" docker compose down --volumes --remove-orphans
