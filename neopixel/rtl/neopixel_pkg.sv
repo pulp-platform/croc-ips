@@ -4,7 +4,6 @@
 //
 // Author: Luisa Wüthrich <lwuethri@ethz.ch>
 
-`include "register_interface/typedef.svh"
 `include "obi/typedef.svh"
 
 package neopixel_pkg;
