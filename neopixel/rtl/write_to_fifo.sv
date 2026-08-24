@@ -92,7 +92,7 @@ module write_to_fifo import neopixel_pkg::*; #(
         obi_rsp_o.gnt         = obi_req_i.req && !fifo_write_stall;
         obi_rsp_o.r.rid       = id_q;
         obi_rsp_o.r.err       = err_q;
-        obi_rsp_o.r.rvalid    = valid_q;
+        obi_rsp_o.rvalid      = valid_q;
         obi_rsp_o.r.rdata     = rdata_q;
         obi_rsp_o.r.r_optional = '0;
     end

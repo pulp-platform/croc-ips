@@ -4,8 +4,6 @@
 //
 // Author: Luisa Wüthrich <lwuethri@ethz.ch>
 
-`include "idma/typedef.svh"
-
 module neopixel_dma #(
     /// Data width
     parameter int unsigned DataWidth        = 32'd32,
@@ -52,135 +50,80 @@ module neopixel_dma #(
     output logic     busy_o
 );
 
-    // Dependent parameter
-    localparam int unsigned StrbWidth = DataWidth / 32'd8;
+    localparam int unsigned BytesPerBeat = DataWidth / 8;
 
-    // Dependent types
-    typedef logic [StrbWidth-1:0]   strb_t;
-    typedef logic [UserWidth-1:0]   user_t;
-    typedef logic [ObiIdWidth-1:0]  id_t;
+    logic    active_q;
+    logic    wait_response_q;
+    addr_t   read_addr_q;
+    tf_len_t bytes_remaining_q;
 
-    /// Init read request
-    typedef struct packed {
-        addr_t  cfg;
-        data_t  term;
-        strb_t  strb;
-        id_t    id;
-    } init_req_chan_t;
+    logic response_accepted;
 
-    typedef struct packed {
-        init_req_chan_t req_chan;
-        logic           req_valid;
-        logic           rsp_ready;
-    } init_req_t;
+    assign req_ready_o       = !active_q;
+    assign busy_o            = active_q;
+    assign fifo_data_o       = obi_rsp_i.r.rdata;
+    assign fifo_valid_o      = active_q && obi_rsp_i.rvalid;
+    assign response_accepted = fifo_valid_o && fifo_ready_i;
 
-    typedef struct packed {
-        logic [DataWidth-1:0] init;
-    } init_rsp_chan_t;
+    always_comb begin
+        obi_req_o        = '0;
+        obi_req_o.rready = active_q && fifo_ready_i;
 
-    typedef struct packed {
-        init_rsp_chan_t rsp_chan;
-        logic           rsp_valid;
-        logic           req_ready;
-    } init_rsp_t;
-
-    // Meta Channel Widths
-    localparam int unsigned init_req_chan_width = $bits(init_req_chan_t);
-    localparam int unsigned obi_a_chan_width = $bits(obi_a_chan_t);
-
-    // iDMA request / response types
-    `IDMA_TYPEDEF_FULL_REQ_T(idma_req_t, id_t, addr_t, tf_len_t)
-    `IDMA_TYPEDEF_FULL_RSP_T(idma_rsp_t, addr_t)
-
-    // Meta channels
-    typedef struct packed {
-        obi_a_chan_t a_chan;
-    } obi_read_meta_channel_t;
-
-    typedef struct packed {
-        obi_read_meta_channel_t obi;
-    } read_meta_channel_t;
-
-    typedef struct packed {
-        init_req_chan_t req_chan;
-    } init_write_meta_channel_t;
-
-    typedef struct packed {
-        init_write_meta_channel_t init;
-    } write_meta_channel_t;
-
-    // Local Signals
-    idma_req_t            idma_req;
-    idma_pkg::idma_busy_t idma_busy;
-    init_req_t            init_req;
-    init_rsp_t            init_rsp;
-
-
-    // Construct Request
-    always_comb begin : proc_assign_request
-        idma_req                  = '0;
-        idma_req.length           = num_bytes_i;
-        idma_req.src_addr         = src_addr_i;
-        idma_req.opt.src_protocol = idma_pkg::OBI;
-        idma_req.opt.dst_protocol = idma_pkg::INIT;
+        if (active_q && !wait_response_q) begin
+            obi_req_o.a.addr  = read_addr_q;
+            obi_req_o.a.we    = 1'b0;
+            obi_req_o.a.be    = '1;
+            obi_req_o.a.wdata = '0;
+            obi_req_o.a.aid   = '0;
+            obi_req_o.req     = 1'b1;
+        end
     end
 
-    // Connect FIFO interface
-    assign fifo_data_o  = init_req.req_chan.term;
-    assign fifo_valid_o = init_req.req_valid;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            active_q          <= 1'b0;
+            wait_response_q   <= 1'b0;
+            read_addr_q       <= '0;
+            bytes_remaining_q <= '0;
+            transfer_done_o   <= 1'b0;
+        end else begin
+            transfer_done_o <= 1'b0;
 
-    assign init_rsp.rsp_chan.init = '0;
-    assign init_rsp.rsp_valid     = 1'b1;
-    assign init_rsp.req_ready     = fifo_ready_i;
-
-    // Connect busy signals
-    assign busy_o = |idma_busy;
-
-    // DMA
-    idma_backend_r_obi_w_init #(
-        .CombinedShifter      ( 1'b0                        ),
-        .DataWidth            ( DataWidth                   ),
-        .AddrWidth            ( AddrWidth                   ),
-        .AxiIdWidth           ( ObiIdWidth                  ),
-        .UserWidth            ( UserWidth                   ),
-        .TFLenWidth           ( TFLenWidth                  ),
-        .MaskInvalidData      ( 1'b1                        ),
-        .BufferDepth          ( 32'd3                       ),
-        .RAWCouplingAvail     ( 1'b0                        ),
-        .HardwareLegalizer    ( 1'b1                        ),
-        .RejectZeroTransfers  ( 1'b1                        ),
-        .ErrorCap             ( idma_pkg::NO_ERROR_HANDLING ),
-        .PrintFifoInfo        ( 1'b0                        ),
-        .NumAxInFlight        ( 32'd2                       ),
-        .MemSysDepth          ( 32'd0                       ),
-        .idma_req_t           ( idma_req_t                  ),
-        .idma_rsp_t           ( idma_rsp_t                  ),
-        .idma_eh_req_t        ( idma_pkg::idma_eh_req_t     ),
-        .idma_busy_t          ( idma_pkg::idma_busy_t       ),
-        .init_req_t           ( init_req_t                  ),
-        .init_rsp_t           ( init_rsp_t                  ),
-        .obi_req_t            ( obi_req_t                   ),
-        .obi_rsp_t            ( obi_rsp_t                   ),
-        .write_meta_channel_t ( write_meta_channel_t        ),
-        .read_meta_channel_t  ( read_meta_channel_t         )
-    ) i_idma_backend  (
-        .clk_i,
-        .rst_ni,
-        .testmode_i       ( 1'b0                ),
-        .idma_req_i       ( idma_req            ),
-        .req_valid_i      ( req_valid_i         ),
-        .req_ready_o      ( req_ready_o         ),
-        .idma_rsp_o       ( /* NOT CONNECTED */ ),
-        .rsp_valid_o      ( transfer_done_o     ),
-        .rsp_ready_i      ( 1'b1                ),
-        .idma_eh_req_i    (  '0                 ),
-        .eh_req_valid_i   ( 1'b0                ),
-        .eh_req_ready_o   ( /* NOT CONNECTED */ ),
-        .obi_read_req_o   ( obi_req_o           ),
-        .obi_read_rsp_i   ( obi_rsp_i           ),
-        .init_write_req_o ( init_req            ),
-        .init_write_rsp_i ( init_rsp            ),
-        .busy_o           ( idma_busy           )
-    );
+            if (!active_q) begin
+                if (req_valid_i) begin
+                    // DMA commands are validated by neopixel_reg and describe
+                    // a non-zero, word-aligned raw frame.
+                    active_q          <= 1'b1;
+                    wait_response_q   <= 1'b0;
+                    read_addr_q       <= src_addr_i;
+                    bytes_remaining_q <= num_bytes_i;
+                end
+            end else if (!wait_response_q && obi_rsp_i.gnt) begin
+                // Croc's SRAM normally responds in a later cycle. Handle a
+                // combined grant/response as well to keep the OBI handshake
+                // complete for other compatible subordinates.
+                if (response_accepted) begin
+                    if (bytes_remaining_q == BytesPerBeat) begin
+                        active_q        <= 1'b0;
+                        transfer_done_o <= 1'b1;
+                    end else begin
+                        read_addr_q       <= read_addr_q + BytesPerBeat;
+                        bytes_remaining_q <= bytes_remaining_q - BytesPerBeat;
+                    end
+                end else begin
+                    wait_response_q <= 1'b1;
+                end
+            end else if (wait_response_q && response_accepted) begin
+                if (bytes_remaining_q == BytesPerBeat) begin
+                    active_q        <= 1'b0;
+                    transfer_done_o <= 1'b1;
+                end else begin
+                    read_addr_q       <= read_addr_q + BytesPerBeat;
+                    bytes_remaining_q <= bytes_remaining_q - BytesPerBeat;
+                    wait_response_q   <= 1'b0;
+                end
+            end
+        end
+    end
 
 endmodule

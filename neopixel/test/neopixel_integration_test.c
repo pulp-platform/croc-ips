@@ -6,15 +6,17 @@
 
 #include "neopixel.h"
 
+static uint32_t frame[] = {0x00ff0000u};
+
 int main(void) {
-    // Send a one-pixel FIFO frame with one-cycle waveform phases. This checks
-    // Croc integration, OBI register/FIFO paths, and controller completion.
+    // Send a one-pixel DMA frame with one-cycle waveform phases. This checks
+    // Croc integration, OBI register and manager paths, and completion.
     neopixel_init_timing(1, 1, 1, 1, 1, 1, 0);
 
-    if (!neopixel_fifo_write(0x00ff0000u)) {
+    if (!neopixel_setup_dma(frame, sizeof(frame))) {
         return 1;
     }
-    if (!neopixel_wait_latch_leave()) {
+    if (!neopixel_wait_frame()) {
         return 2;
     }
 
