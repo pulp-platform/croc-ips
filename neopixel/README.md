@@ -43,10 +43,13 @@ The files in `croc/` show you one possibility to integrate the IP in your design
 * `user_pkg.sv` declares the user-domain address range and NeoPixel parameters.
 * `user_domain.sv` instantiates the peripheral and routes interrupt and data output.
 * `croc_soc.sv` exposes the NeoPixel output at the SoC boundary.
+* `croc_chip.sv` consumes the output in Croc's chip wrapper; an FPGA or ASIC
+  top-level must export it to a suitable pad.
 * `tb_croc_soc.sv` is the corresponding testbench wrapper with the added neopixel pin.
 
-Copy and adapt these files to your needs.
-In particular, file-lists, peripheral addresses, timer setup and interrupt assignment might need adapting.
+Copy and adapt these files to your Croc project. For a project with other
+user-domain IPs, merge the address map, bus wiring, and source-list changes by
+hand.
 
 The `sw/` directory is an extension, not an independent Croc software tree.
 Copy its headers and sources into `croc/sw/lib/inc`, `croc/sw/lib/src`, and `croc/sw`,
@@ -60,9 +63,6 @@ The MLEM NeoPixel design was simulated and tested on an FPGA before tapeout.
 The bring-up sequence in [`test/neopixel.gdb`](test/neopixel.gdb)
 configures one four-pixel DMA frame through an OpenOCD GDB server.
 It uses the MLEM/Genesys2 address map and is neither portable nor a self-checking test.
-
-This IP does not provide a self-checking RTL testbench.
-Verifying functionality via simulation or FPGA testing is up to the integrator.
 
 ## Software API
 
