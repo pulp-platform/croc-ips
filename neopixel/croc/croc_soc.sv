@@ -23,11 +23,10 @@ module croc_soc import croc_pkg::*; #(
   input  logic uart_rx_i,
   output logic uart_tx_o,
 
-  input  logic [GpioCount-1:0] gpio_i,        // Input from GPIO pins
-  output logic [GpioCount-1:0] gpio_o,        // Output to GPIO pins
+  input  logic [GpioCount-1:0] gpio_i,       // Input from GPIO pins
+  output logic [GpioCount-1:0] gpio_o,       // Output to GPIO pins
   output logic [GpioCount-1:0] gpio_out_en_o, // Output enable signal; 0 -> input, 1 -> output
-
-  output logic neopixel_o
+  output logic                 neopixel_o
 );
 
   logic synced_rst_n;
