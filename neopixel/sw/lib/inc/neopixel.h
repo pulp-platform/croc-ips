@@ -25,6 +25,7 @@
 #define NPX_DMA_START_REG_OFFSET		(0x120)
 #define NPX_DMA_NUM_BYTES_REG_OFFSET	(0x140)
 #define NPX_DMA_VALID_REG_OFFSET		(0x160)
+#define NPX_CONTROL_REG_OFFSET          (0x170)
 
 #define NPX_FIFO_REG_OFFSET         	(0x180)
 #define NPX_FIFO_REG_MODE_FIFO         	(0x01)
@@ -37,6 +38,17 @@
 #define NPX_FIFO_HIGH_THRES_REG_OFFSET  (0x1E0)
 
 #define NPX_DMA_STATUS_REG_OFFSET       (0x1D0)
+#define NPX_FIFO_LEVEL_REG_OFFSET       (0x190)
+#define NPX_STATUS_REG_OFFSET           (0x1F0)
+
+// CONTROL is a set of write-one command strobes and reads as zero.
+#define NPX_CONTROL_DMA_ABORT           (1u << 0)
+#define NPX_CONTROL_FIFO_FLUSH          (1u << 1)
+
+// STATUS shows levels, not events.
+#define NPX_STATUS_FRAME_ACTIVE         (1u << 0)  // frame, latch or sleep in progress
+#define NPX_STATUS_FIFO_LOW             (1u << 1)  // FIFO level <= low threshold
+#define NPX_STATUS_FIFO_HIGH            (1u << 2)  // FIFO level >= high threshold
 
 #define NPX_FIFO_DATA_REG_OFFSET        (0x200)
 
@@ -47,12 +59,21 @@
 #define NPX_IRQ_LATCH_ENTER             (1u << 3)
 #define NPX_IRQ_LATCH_LEAVE             (1u << 4)
 #define NPX_IRQ_DMA_ERROR               (1u << 5)
+#define NPX_IRQ_UNDERRUN                (1u << 6)  // a pixel was sent as zeros, the FIFO was empty
 #define NPX_IRQ_EVENT_MASK              (NPX_IRQ_FIFO_LOW | NPX_IRQ_FIFO_HIGH | \
                                          NPX_IRQ_DMA_DONE | NPX_IRQ_LATCH_ENTER | \
-                                         NPX_IRQ_LATCH_LEAVE | NPX_IRQ_DMA_ERROR)
+                                         NPX_IRQ_LATCH_LEAVE | NPX_IRQ_DMA_ERROR | \
+                                         NPX_IRQ_UNDERRUN)
 
-// DMA_STATUS bit 0 is asserted while a request is pending or active.
+// DMA_STATUS bit 0 is asserted while a transfer is queued or running.  Bit 1 is asserted while
+// the command queue is full, i.e. a transfer is waiting behind the one in progress.
 #define NPX_DMA_STATUS_BUSY             (1u << 0)
+#define NPX_DMA_STATUS_QUEUED           (1u << 1)
+
+// Largest value the timing registers store, in clock cycles. A larger value is stored as this.
+#define NPX_TIMING_PULSE_MAX       (0x3FFFu)    // T1H, T1L, T0H, T0L: 14 bit
+#define NPX_TIMING_LATCH_MAX       (0xFFFFFu)   // LATCH: 20 bit
+#define NPX_TIMING_SLEEP_MAX       (0xFFFFFFu)  // SLEEP: 24 bit
 
 // NeoPixel timing defaults, converted from nanoseconds by neopixel_init().
 #define NPX_MAX_NUM_PIXELS            (2048u)
@@ -89,19 +110,36 @@ void neopixel_init_timing(uint32_t num_pixels,
 // Select FIFO ownership and queue one GRB word. FIFO mode remains selected.
 // Returns false if ownership could not be selected.
 bool neopixel_fifo_write(uint32_t color);
-// Select DMA ownership, program one complete raw frame, and trigger it with a
-// write-one command.  The byte count must equal the configured pixel count times
-// sizeof(uint32_t); partial or multi-frame transfers are rejected.  Returns false
-// when the request is invalid, the configured pixel count is zero, DMA is already
-// busy, or the owner transition has not been made safe by observing LATCH_LEAVE.
+// Select DMA ownership, program one chunk of a raw frame, and trigger it with a
+// write-one command.  The byte count is a non-zero multiple of 4 and at most the configured
+// pixel count times sizeof(uint32_t); a frame can be sent as several chunks.  One further
+// chunk can be queued while a transfer is running.  Returns false when the request is invalid, the
+// configured pixel count is zero, a frame is already queued, or the owner cannot change
+// because the peripheral is not idle (no transfer, no frame, empty FIFO).
 bool neopixel_setup_dma(uint32_t *data, uint32_t num_bytes);
-// Select FIFO ownership after a completed frame.  The first selection after
-// reset is permitted; later transitions require an observed LATCH_LEAVE event.
+// Select FIFO ownership.  Returns false while the peripheral is not idle (transfer, frame
+// or FIFO entry left) unless the FIFO already has this owner.
 bool neopixel_select_fifo(void);
 uint32_t neopixel_irq_status(void);
 void neopixel_irq_clear(uint32_t events);
 uint32_t neopixel_dma_status(void);
+// A transfer is queued or running
 bool neopixel_dma_busy(void);
+// The command queue is full: a new transfer cannot be started yet
+bool neopixel_dma_queued(void);
+// Discard the queued and the running DMA command.  The frame in progress still ends: pixels
+// that did not arrive are sent as zeros and UNDERRUN is raised.  A command started after the abort
+// is kept.  The wait functions return false once the peripheral is idle, there is no DMA_DONE.
+void neopixel_dma_abort(void);
+// Drop all FIFO entries.  When flushing during a transfer, abort the DMA in the same CONTROL write
+// (both strobes act together, order does not matter): a flush alone loses only the words
+// that are in the FIFO and the transfer continues.  A pixel that is being shifted out loses its
+// remaining bits.
+void neopixel_fifo_flush(void);
+// Number of FIFO entries, including a word that is being shifted out
+uint32_t neopixel_fifo_level(void);
+// STATUS levels, see NPX_STATUS_*
+uint32_t neopixel_status(void);
 // Poll sticky events.  DMA_ERROR causes the wait to fail, but only after
 // DMA_STATUS_BUSY clears and the request reaches its terminal state.  Callers
 // should clear stale events before starting a new frame.  DMA_DONE only
@@ -109,7 +147,8 @@ bool neopixel_dma_busy(void);
 // frame.
 bool neopixel_wait_dma(void);
 // LATCH_LEAVE is observed only after the configured sleep period, when the
-// controller is fully idle and safe for an ownership transition.
+// controller is fully idle and safe for an ownership transition.  Returns false when the
+// frame was stopped before it started (abort or flush), or on DMA_ERROR.
 bool neopixel_wait_latch_leave(void);
 bool neopixel_wait_frame(void);
 

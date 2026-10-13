@@ -4,41 +4,44 @@
 //
 // Author: Luisa Wüthrich <lwuethri@ethz.ch>
 
+`include "common_cells/assertions.svh"
 `include "common_cells/registers.svh"
 
 module neopixel import neopixel_pkg::*; #(
-    parameter obi_pkg::obi_cfg_t           SbrObiCfg      = obi_pkg::ObiDefaultConfig,
-    /// Regbus request struct type.
-    parameter type sbr_obi_req_t          = logic,
-    /// Regbus response struct type.
-    parameter type sbr_obi_rsp_t          = logic,
-    parameter obi_pkg::obi_cfg_t           MgrObiCfg      = obi_pkg::ObiDefaultConfig,
-    /// Regbus request struct type.
-    parameter type mgr_obi_req_t          = logic,
-    /// Regbus response struct type.
-    parameter type mgr_obi_rsp_t          = logic
-)(
-    /// Primary input clock. The control interface is suposed to be synchronous to
+    /// OBI configuration of the subordinate (control) port.
+    parameter obi_pkg::obi_cfg_t SbrObiCfg  = obi_pkg::ObiDefaultConfig,
+    /// OBI request struct type of the subordinate port.
+    parameter type sbr_obi_req_t            = logic,
+    /// OBI response struct type of the subordinate port.
+    parameter type sbr_obi_rsp_t            = logic,
+    /// OBI configuration of the manager (DMA) port.
+    parameter obi_pkg::obi_cfg_t MgrObiCfg  = obi_pkg::ObiDefaultConfig,
+    /// OBI request struct type of the manager port.
+    parameter type mgr_obi_req_t            = logic,
+    /// OBI response struct type of the manager port.
+    parameter type mgr_obi_rsp_t            = logic
+) (
+    /// Primary input clock. The control interface is supposed to be synchronous to
     /// this clock.
-    input logic clk_i,
+    input  logic clk_i,
     /// Asynchronous active-low reset
-    input logic rst_ni,
+    input  logic rst_ni,
     /// Testmode
-    input logic testmode_i,
+    input  logic testmode_i,
 
     /// This is the Subordinate, we want something from the neopixel
-    /// Control interface request side using register_interface protocol.
-    /// OBI request interface : a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | rready, req
+    /// Control interface request side using OBI.
+    /// OBI request interface : a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | req
     input  sbr_obi_req_t obi_req_i,
-    /// Control interface request side using register_interface protocol.
+    /// Control interface response side using OBI.
     /// OBI response interface : r.rdata, r.rid, r.err, r.r_optional | gnt, rvalid
     output sbr_obi_rsp_t obi_rsp_o,
 
-    /// This is a Manager, he wants something from somewhere else
-    /// Control interface request side using register_interface protocol.
-    /// OBI request interface : a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | rready, req
+    /// This is a Manager, it wants something from somewhere else
+    /// DMA interface request side using OBI.
+    /// OBI request interface : a.addr, a.we, a.be, a.wdata, a.aid, a.a_optional | req
     output mgr_obi_req_t mgr_obi_req_o,
-    /// Control interface request side using register_interface protocol.
+    /// DMA interface response side using OBI.
     /// OBI response interface : r.rdata, r.rid, r.err, r.r_optional | gnt, rvalid
     input  mgr_obi_rsp_t mgr_obi_rsp_i,
 
@@ -48,341 +51,287 @@ module neopixel import neopixel_pkg::*; #(
     output logic data_o
 );
 
-    /////////////////////////////////
-    // Neopixel`s Manager Bus: DMA //
-    /////////////////////////////////
-
-    // ----------------------------------------------------------------------------------------------------
-    // Converter for the mgr bus
-    // ----------------------------------------------------------------------------------------------------
-    // We need this since the DMA only works with a rready signal and all the other modules don't
-
-    mgr_dma_obi_req_t dma_obi_req;
-    mgr_dma_obi_rsp_t dma_obi_rsp;
-
-    // Signals for dma and converter
-    croc_pkg::mgr_obi_a_chan_t dma_sbr_a_chan;
-    croc_pkg::mgr_obi_r_chan_t dma_sbr_r_chan;
-    logic dma_req, dma_gnt, dma_rvalid;
-    // we want rready
-    logic dma_rready;
-
-    // Signals for Mgr bus from outside and converter
-    croc_pkg::mgr_obi_a_chan_t mgr_a_chan;
-    croc_pkg::mgr_obi_r_chan_t mgr_r_chan;
-    logic mgr_req, mgr_gnt, mgr_rvalid;
-
-    always_comb begin
-        dma_sbr_a_chan = dma_obi_req.a;
-        dma_req = dma_obi_req.req;
-        dma_rready = dma_obi_req.rready;
-        dma_obi_rsp.r = dma_sbr_r_chan;
-        dma_obi_rsp.gnt = dma_gnt;
-        dma_obi_rsp.rvalid = dma_rvalid;
-
-        mgr_obi_req_o.a = mgr_a_chan;
-        mgr_obi_req_o.req = mgr_req;
-        mgr_r_chan = mgr_obi_rsp_i.r;
-        mgr_gnt = mgr_obi_rsp_i.gnt;
-        mgr_rvalid = mgr_obi_rsp_i.rvalid;
-    end
-
-    obi_rready_converter #(
-        .obi_a_chan_t ( croc_pkg::mgr_obi_a_chan_t ),
-        .obi_r_chan_t ( croc_pkg::mgr_obi_r_chan_t )
-    ) i_obi_rready_converter (
-        .clk_i,
-        .rst_ni,
-        .test_mode_i ( testmode_i ),
-
-        .sbr_a_chan_i   ( dma_sbr_a_chan    ),
-        .req_i          ( dma_req           ),
-        .gnt_o          ( dma_gnt           ),
-        .sbr_r_chan_o   ( dma_sbr_r_chan    ),
-        .rvalid_o       ( dma_rvalid        ),
-        .rready_i       ( dma_rready        ),
-
-        .mgr_a_chan_o   ( mgr_a_chan    ),
-        .req_o          ( mgr_req       ),
-        .gnt_i          ( mgr_gnt       ),
-        .mgr_r_chan_i   ( mgr_r_chan    ),
-        .rvalid_i       ( mgr_rvalid    )
-    );
-
-    // ----------------------------------------------------------------------------------------------------
-    // DMA
-    // ----------------------------------------------------------------------------------------------------
+    /////////
+    // DMA //
+    /////////
 
     // Signal exchange between register and neopixel_dma module
     dma_write_reg_union_t dma_constraints;
 
-    // Signals to check if we can load new data into FIFO
-    logic dma_req_ready;
-    logic dma_pending_q, dma_pending_d;
-    logic dma_active_q, dma_active_d;
-    logic [RegisterDepth-1:0] dma_src_addr_q, dma_src_addr_d;
-    logic [RegisterDepth-1:0] dma_num_bytes_q, dma_num_bytes_d;
+    // DMA command: the DMA queues one command behind the transfer in progress
     logic dma_start;
-    logic dma_status;
+    logic dma_req_ready;
+    logic dma_busy;
+    logic dma_abort;
     logic dma_transfer_done;
 
     // Signal exchange between FIFO and DMA
-    logic [RegisterDepth - 1:0]   dma_fifo_data;
-    logic dma_fifo_valid;
-    logic dma_fifo_ready;
-    logic fifo_full;
-
-    // Status
-
-    // The active bit closes the acceptance-to-backend-busy gap.  It is set by
-    // the command handshake and cleared by the DMA completion pulse.
-    assign dma_active_d = dma_transfer_done ? 1'b0 :
-                          ((dma_pending_q && dma_req_ready) ? 1'b1 : dma_active_q);
-    assign dma_status = dma_pending_q | dma_active_q;
-    assign dma_pending_d = (dma_start) ? 1'b1 :
-                           (dma_pending_q && dma_req_ready) ? 1'b0 :
-                           dma_pending_q;
-    assign dma_src_addr_d = dma_start ? dma_constraints.str.src_addr : dma_src_addr_q;
-    assign dma_num_bytes_d = dma_start ? dma_constraints.str.num_bytes : dma_num_bytes_q;
-
-    `FF(dma_pending_q,   dma_pending_d,   '0, clk_i, rst_ni)
-    `FF(dma_active_q,    dma_active_d,    '0, clk_i, rst_ni)
-    `FF(dma_src_addr_q,  dma_src_addr_d,  '0, clk_i, rst_ni)
-    `FF(dma_num_bytes_q, dma_num_bytes_d, '0, clk_i, rst_ni)
+    logic [RegisterDepth-1:0] dma_fifo_data;
+    logic                     dma_fifo_valid;
+    logic                     dma_fifo_ready;
 
     neopixel_dma #(
-        .ObiCfg         ( MgrDmaObiCfg     ),
-        .obi_a_chan_t   ( neopixel_pkg::mgr_dma_obi_a_chan_t),
-        .obi_req_t      ( mgr_dma_obi_req_t ),
-        .obi_rsp_t      ( mgr_dma_obi_rsp_t )
+        .DataWidth    ( MgrObiCfg.DataWidth ),
+        .AddrWidth    ( MgrObiCfg.AddrWidth ),
+        .TFLenWidth   ( FrameBytesWidth     ),
+        .obi_req_t    ( mgr_obi_req_t       ),
+        .obi_rsp_t    ( mgr_obi_rsp_t       )
     ) i_dma (
         .clk_i,
         .rst_ni,
 
-        .src_addr_i         ( dma_src_addr_q  ),
-        .num_bytes_i        ( dma_num_bytes_q ),
+        .src_addr_i       ( dma_constraints.str.src_addr  ),
+        .num_bytes_i      ( FrameBytesWidth'(dma_constraints.str.num_bytes) ),
+        .req_valid_i      ( dma_start         ),
+        .req_ready_o      ( dma_req_ready     ),
 
-        .req_valid_i        ( dma_pending_q ),
-        .req_ready_o        ( dma_req_ready     ),
+        .busy_o           ( dma_busy          ),
+        .abort_i          ( dma_abort         ),
 
-        .transfer_done_o    ( dma_transfer_done ),
+        .transfer_done_o  ( dma_transfer_done ),
 
-        .obi_req_o          ( dma_obi_req       ),
-        .obi_rsp_i          ( dma_obi_rsp       ),
+        .obi_req_o        ( mgr_obi_req_o     ),
+        .obi_rsp_i        ( mgr_obi_rsp_i     ),
 
-        .fifo_data_o        ( dma_fifo_data     ),
-        .fifo_valid_o       ( dma_fifo_valid    ),
-        .fifo_ready_i       ( dma_fifo_ready    ),
-
-        .busy_o             (                   )
+        .fifo_data_o      ( dma_fifo_data     ),
+        .fifo_valid_o     ( dma_fifo_valid    ),
+        .fifo_ready_i     ( dma_fifo_ready    )
     );
 
-    ////////////////////////////
-    // Neopixel`s Subordinate //
-    ////////////////////////////
-
-    //----------------------------------------------------------------------------------------------------
-    // Neopixel`s Subordinate Bus
-    //----------------------------------------------------------------------------------------------------
+    ////////////////////////////////
+    // Neopixel's Subordinate Bus //
+    ////////////////////////////////
 
     sbr_obi_req_t [NumNeoPixelAddress-1:0] all_neopixel_obi_req;
     sbr_obi_rsp_t [NumNeoPixelAddress-1:0] all_neopixel_obi_rsp;
 
-    // Error Subordinate Bus
+    // Error subordinate bus
     sbr_obi_req_t neopixel_error_obi_req;
     sbr_obi_rsp_t neopixel_error_obi_rsp;
 
-    // Register Subordinate Bus
+    // Register subordinate bus
     sbr_obi_req_t neopixel_register_obi_req;
     sbr_obi_rsp_t neopixel_register_obi_rsp;
 
-    // Neopixel Subordinate Bus
+    // FIFO subordinate bus
     sbr_obi_req_t neopixel_fifo_obi_req;
     sbr_obi_rsp_t neopixel_fifo_obi_rsp;
 
-    assign neopixel_error_obi_req             = all_neopixel_obi_req[NeoPixelError];
+    assign neopixel_error_obi_req                 = all_neopixel_obi_req[NeoPixelError];
     assign all_neopixel_obi_rsp[NeoPixelError]    = neopixel_error_obi_rsp;
 
-    assign neopixel_register_obi_req          = all_neopixel_obi_req[NeoPixelRegister];
+    assign neopixel_register_obi_req              = all_neopixel_obi_req[NeoPixelRegister];
     assign all_neopixel_obi_rsp[NeoPixelRegister] = neopixel_register_obi_rsp;
 
-    assign neopixel_fifo_obi_req              = all_neopixel_obi_req[NeoPixelFifo];
+    assign neopixel_fifo_obi_req                  = all_neopixel_obi_req[NeoPixelFifo];
     assign all_neopixel_obi_rsp[NeoPixelFifo]     = neopixel_fifo_obi_rsp;
 
-    //----------------------------------------------------------------------------------------------------
-    // demultiplex to user subordinates according to address map
-    //----------------------------------------------------------------------------------------------------
+    // The address is decoded in two steps. An access outside of the window of the IP is an error,
+    // decided by comparing the upper address bits for equality. Inside the window the registers
+    // are in the lower part and the FIFO in the rest, so a few bits tell them apart.
+    `ASSERT_INIT(WindowIsPowerOfTwo_A,
+                 (32'd1 << NeoPixelWindowWidth) == (NeoPixelRegisterAddrRange + NeoPixelFifoAddrRange))
+    `ASSERT_INIT(WindowIsAligned_A, NeoPixelRegisterAddrOffset[NeoPixelWindowWidth-1:0] == '0)
+    `ASSERT_INIT(RegistersFillPowerOfTwo_A,
+                 (32'd1 << NeoPixelRegisterWidth) == NeoPixelRegisterAddrRange)
 
+    logic [SbrObiCfg.AddrWidth-1:0] request_addr;
+    logic window_hit;
+    logic register_hit;
     logic [cf_math_pkg::idx_width(NumNeoPixelAddress)-1:0] neopixel_idx;
 
-    addr_decode #(
-        .NoIndices ( NumNeoPixelAddress             ),
-        .NoRules   ( NumNeoPixelAddressRules        ),
-        .addr_t    ( logic[SbrObiCfg.DataWidth-1:0]    ),
-        .rule_t    ( addr_map_rule_t                ),
-        .Napot     ( 1'b0                           )
-    ) i_addr_decode_periphs (
-        .addr_i           ( obi_req_i.a.addr    ),
-        .addr_map_i       ( neopixel_addr_map   ),
-        .idx_o            ( neopixel_idx        ),
-        .dec_valid_o      (),
-        .dec_error_o      (),
-        .en_default_idx_i ( 1'b1 ),
-        .default_idx_i    ( '0   )
-    );
+    assign request_addr = obi_req_i.a.addr;
+    assign window_hit   = (request_addr[SbrObiCfg.AddrWidth-1:NeoPixelWindowWidth] ==
+                           NeoPixelRegisterAddrOffset[SbrObiCfg.AddrWidth-1:NeoPixelWindowWidth]);
+    assign register_hit = (request_addr[NeoPixelWindowWidth-1:NeoPixelRegisterWidth] == '0);
+
+    always_comb begin
+        neopixel_idx = NeoPixelError;
+        if (window_hit) begin
+            neopixel_idx = register_hit ? NeoPixelRegister : NeoPixelFifo;
+        end
+    end
 
     obi_demux #(
-        .ObiCfg      ( SbrObiCfg            ),
-        .obi_req_t   ( sbr_obi_req_t        ),
-        .obi_rsp_t   ( sbr_obi_rsp_t        ),
-        .NumMgrPorts ( NumNeoPixelAddress   ),
-        .NumMaxTrans ( 2                    )
+        .ObiCfg      ( SbrObiCfg          ),
+        .obi_req_t   ( sbr_obi_req_t      ),
+        .obi_rsp_t   ( sbr_obi_rsp_t      ),
+        .NumMgrPorts ( NumNeoPixelAddress ),
+        .NumMaxTrans ( 2                  )
     ) i_obi_demux (
         .clk_i,
         .rst_ni,
 
-        .sbr_port_select_i ( neopixel_idx   ),
-        .sbr_port_req_i    ( obi_req_i      ),
-        .sbr_port_rsp_o    ( obi_rsp_o      ),
+        .sbr_port_select_i ( neopixel_idx        ),
+        .sbr_port_req_i    ( obi_req_i           ),
+        .sbr_port_rsp_o    ( obi_rsp_o           ),
 
         .mgr_ports_req_o   ( all_neopixel_obi_req ),
         .mgr_ports_rsp_i   ( all_neopixel_obi_rsp )
     );
 
-    //----------------------------------------------------------------------------------------------------
-    // Neopixel Subordinates///
-    //----------------------------------------------------------------------------------------------------
-
-    // Error Subordinate
     obi_err_sbr #(
-        .ObiCfg      ( SbrObiCfg       ),
-        .obi_req_t   ( sbr_obi_req_t    ),
-        .obi_rsp_t   ( sbr_obi_rsp_t    ),
-        .NumMaxTrans ( 1            ),
-        .RspData     ( 32'hBADCAB1E )
+        .ObiCfg      ( SbrObiCfg      ),
+        .obi_req_t   ( sbr_obi_req_t  ),
+        .obi_rsp_t   ( sbr_obi_rsp_t  ),
+        .NumMaxTrans ( 1              ),
+        .RspData     ( ReadErrorData  )
     ) i_err_sbr (
         .clk_i,
         .rst_ni,
         .testmode_i,
-        .obi_req_i  ( neopixel_error_obi_req    ),
-        .obi_rsp_o  ( neopixel_error_obi_rsp    )
+
+        .obi_req_i   ( neopixel_error_obi_req ),
+        .obi_rsp_o   ( neopixel_error_obi_rsp )
     );
+
+    ///////////////
+    // Registers //
+    ///////////////
 
     // Signal exchange between register and neopixel_controller module
     neopixel_write_reg_union_t timing_constraints;
 
-    // Signal exchange between register and obi_write_to_fifo module
-    logic [1:0] fifo_access;
+    // Signal exchange between register and write_to_fifo module
+    logic [1:0]                    fifo_access;
     logic [FifoThresholdWidth-1:0] fifo_high_threshold, fifo_low_threshold;
-    logic [5:0] irq_mask, irq_status;
-    logic [5:0] irq_events;
-    logic frame_active;
-    logic frame_active_q;
 
-    // Register for several things
+    // Interrupt mask, status and raw events, see NEOPIXEL_IRQ_MASK_OFFSET
+    logic [NumIrqEvents-1:0] irq_mask, irq_status;
+    logic [NumIrqEvents-1:0] irq_events;
+
+    // Status from the FIFO and the controller
+    logic fifo_empty;
+    logic fifo_low, fifo_high;
+    logic fifo_flush;
+    logic [FifoThresholdWidth-1:0] fifo_usage;
+    logic frame_active;
+
     neopixel_reg #(
-        .ObiCfg      ( SbrObiCfg        ),
-        .obi_req_t   ( sbr_obi_req_t     ),
-        .obi_rsp_t   ( sbr_obi_rsp_t     )
+        .ObiCfg    ( SbrObiCfg      ),
+        .obi_req_t ( sbr_obi_req_t  ),
+        .obi_rsp_t ( sbr_obi_rsp_t  )
     ) i_neopixel_reg (
         .clk_i,
         .rst_ni,
 
-        .obi_req_i              ( neopixel_register_obi_req),
-        .obi_rsp_o              ( neopixel_register_obi_rsp),
+        .obi_req_i             ( neopixel_register_obi_req ),
+        .obi_rsp_o             ( neopixel_register_obi_rsp ),
 
-        .timing_constraints_o   ( timing_constraints ),
+        .timing_constraints_o  ( timing_constraints        ),
+        .dma_constraints_o     ( dma_constraints           ),
+        .dma_start_o           ( dma_start                 ),
+        .dma_busy_i            ( dma_busy                  ),
+        .dma_ready_i           ( dma_req_ready             ),
+        .dma_abort_o           ( dma_abort                 ),
+        .fifo_empty_i          ( fifo_empty                ),
+        .fifo_usage_i          ( fifo_usage                ),
+        .fifo_low_i            ( fifo_low                  ),
+        .fifo_high_i           ( fifo_high                 ),
+        .fifo_flush_o          ( fifo_flush                ),
+        .frame_active_i        ( frame_active              ),
 
-        .dma_status_i    ( dma_status ),
-        .fifo_empty_i    ( fifo_empty ),
-        .frame_active_i  ( frame_active ),
-        .dma_start_o     ( dma_start ),
+        .fifo_access_o         ( fifo_access               ),
+        .fifo_high_threshold_o ( fifo_high_threshold       ),
+        .fifo_low_threshold_o  ( fifo_low_threshold        ),
 
-        .dma_constraints_o ( dma_constraints ),
-
-        .fifo_access_o (fifo_access),
-        .fifo_high_threshold_o (fifo_high_threshold),
-        .fifo_low_threshold_o (fifo_low_threshold),
-        .irq_mask_o (irq_mask),
-        .irq_status_o (irq_status),
-        .irq_events_i (irq_events)
+        .irq_mask_o            ( irq_mask                  ),
+        .irq_status_o          ( irq_status                ),
+        .irq_events_i          ( irq_events                )
     );
 
-    // Signal exchange between fifo and neopixel_controller module
-    logic [23:0] fifo_data;
-    logic fifo_pop, fifo_empty;
-    logic fifo_high_interrupt, fifo_low_interrupt;
-    logic controller_latch, controller_latch_d, controller_latch_q;
-    `FF(controller_latch_q, controller_latch_d, '0, clk_i, rst_ni)
-    assign controller_latch_d = controller_latch;
+    //////////
+    // FIFO //
+    //////////
 
-    // write to fifo that the controller can read stuff from the fifo
-    // OBI and the DMA is able to write to it
+    // Signal exchange between FIFO and neopixel_controller module
+    logic [NumBitsPerPixel-1:0] fifo_data;
+    logic        fifo_pop;
 
+    // The FIFO feeds the controller and can be written by either OBI or the DMA
     write_to_fifo #(
-        .ObiCfg     ( SbrObiCfg         ),
-        .obi_req_t  ( sbr_obi_req_t     ),
-        .obi_rsp_t  ( sbr_obi_rsp_t     )
+        .ObiCfg    ( SbrObiCfg      ),
+        .obi_req_t ( sbr_obi_req_t  ),
+        .obi_rsp_t ( sbr_obi_rsp_t  )
     ) i_write_to_fifo (
         .clk_i,
         .rst_ni,
 
-        .fifo_empty_o   ( fifo_empty    ),
-        .fifo_full_o    ( fifo_full     ),
-        .fifo_data_o    ( fifo_data     ),
-        .fifo_pop_i     ( fifo_pop      ),
+        .fifo_empty_o          ( fifo_empty          ),
+        .fifo_pop_i            ( fifo_pop            ),
+        .fifo_flush_i          ( fifo_flush          ),
+        .fifo_usage_o          ( fifo_usage          ),
 
-        .dma_data_i         ( dma_fifo_data  ),
-        .dma_valid_push_i   ( dma_fifo_valid ),
-        .dma_ready_o        ( dma_fifo_ready ),
+        .fifo_data_o           ( fifo_data           ),
 
-        .fifo_access_i (fifo_access),
-        .fifo_low_threshold_i(fifo_low_threshold),
-        .fifo_high_threshold_i(fifo_high_threshold),
+        .dma_data_i            ( dma_fifo_data       ),
+        .dma_valid_push_i      ( dma_fifo_valid      ),
+        .dma_ready_o           ( dma_fifo_ready      ),
 
-        .obi_req_i  ( neopixel_fifo_obi_req ),
-        .obi_rsp_o  ( neopixel_fifo_obi_rsp ),
+        .fifo_access_i         ( fifo_access         ),
+        .fifo_high_threshold_i ( fifo_high_threshold ),
+        .fifo_low_threshold_i  ( fifo_low_threshold  ),
 
-        .high_interrupt_o ( fifo_high_interrupt ),
-        .low_interrupt_o  ( fifo_low_interrupt )
+        .obi_req_i             ( neopixel_fifo_obi_req ),
+        .obi_rsp_o             ( neopixel_fifo_obi_rsp ),
+
+        .fifo_high_o           ( fifo_high           ),
+        .fifo_low_o            ( fifo_low            )
     );
 
-    // Convert level conditions to one-cycle raw events for sticky status capture.
-    logic fifo_low_interrupt_q, fifo_high_interrupt_q;
-    `FF(fifo_low_interrupt_q,  fifo_low_interrupt,  '0, clk_i, rst_ni)
-    `FF(fifo_high_interrupt_q, fifo_high_interrupt, '0, clk_i, rst_ni)
-    `FF(frame_active_q,        frame_active,        '0, clk_i, rst_ni)
+    ////////////////
+    // Controller //
+    ////////////////
 
-    assign irq_events[0] = fifo_low_interrupt  & ~fifo_low_interrupt_q;
-    assign irq_events[1] = fifo_high_interrupt & ~fifo_high_interrupt_q;
-    assign irq_events[2] = dma_transfer_done;
-    assign irq_events[3] = ~controller_latch_q & controller_latch;
-    // Report latch leave only once the complete frame, latch, and configured
-    // sleep interval have finished and the controller is fully idle.
-    assign irq_events[4] = frame_active_q & ~frame_active;
-    assign irq_events[5] = (dma_pending_q | dma_active_q) &&
-                           mgr_obi_rsp_i.rvalid && mgr_obi_rsp_i.r.err;
+    logic controller_latch;
+    logic controller_underrun;
 
-    assign interrupt_o = |(irq_mask & irq_status);
-
-    //----------------------------------------------------------------------------------------------------
-    // Neopixel Controller ///
-    //----------------------------------------------------------------------------------------------------
-
-    neopixel_controller #(
-    ) i_neopixel_controller (
+    neopixel_controller i_neopixel_controller (
         .clk_i,
         .rst_ni,
 
-        .fifo_empty_i   ( fifo_empty    ),
-        .fifo_data_i    ( fifo_data     ),
-        .fifo_pop_o     ( fifo_pop      ),
+        .fifo_empty_i          ( fifo_empty          ),
+        .fifo_flush_i          ( fifo_flush          ),
+        .fifo_data_i           ( fifo_data           ),
+        .fifo_pop_o            ( fifo_pop            ),
 
-        .timing_constraints_i   ( timing_constraints ),
+        .timing_constraints_i  ( timing_constraints  ),
 
-        .data_o          ( data_o         ),
-        .latch_state_o   ( controller_latch ),
-        .frame_active_o  ( frame_active   )
+        .data_o                ( data_o              ),
+        .latch_state_o         ( controller_latch    ),
+        .frame_active_o        ( frame_active        ),
+        .underrun_o            ( controller_underrun )
     );
+
+    ////////////////
+    // Interrupts //
+    ////////////////
+
+    // Convert level conditions to one-cycle raw events for sticky status capture.
+    logic fifo_low_interrupt, fifo_high_interrupt;
+    logic fifo_low_interrupt_q, fifo_high_interrupt_q;
+    logic controller_latch_q;
+    logic frame_active_q;
+
+    // Only software-driven operation uses the FIFO level interrupts
+    assign fifo_low_interrupt  = (fifo_access == FIFO_ACCESS_OBI) && fifo_low;
+    assign fifo_high_interrupt = (fifo_access == FIFO_ACCESS_OBI) && fifo_high;
+
+    `FF(fifo_low_interrupt_q,  fifo_low_interrupt,  '0, clk_i, rst_ni)
+    `FF(fifo_high_interrupt_q, fifo_high_interrupt, '0, clk_i, rst_ni)
+    `FF(controller_latch_q,    controller_latch,    '0, clk_i, rst_ni)
+    `FF(frame_active_q,        frame_active,        '0, clk_i, rst_ni)
+
+    assign irq_events[0] = fifo_low_interrupt && !fifo_low_interrupt_q;
+    assign irq_events[1] = fifo_high_interrupt && !fifo_high_interrupt_q;
+    assign irq_events[2] = dma_transfer_done;
+    assign irq_events[3] = controller_latch && !controller_latch_q;
+    // Report latch leave only once the complete frame, latch, and configured
+    // sleep interval have finished and the controller is fully idle.
+    assign irq_events[4] = frame_active_q && !frame_active;
+    assign irq_events[5] = dma_busy && mgr_obi_rsp_i.rvalid && mgr_obi_rsp_i.r.err;
+    assign irq_events[6] = controller_underrun;
+
+    assign interrupt_o = ((irq_mask & irq_status) != '0);
 
 endmodule
